@@ -1,0 +1,7 @@
+LIBRARY restic_wfx
+EXPORTS
+    FsInit
+    FsFindFirst
+    FsFindNext
+    FsFindClose
+    FsGetDefRootName
