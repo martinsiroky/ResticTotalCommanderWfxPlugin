@@ -8,6 +8,14 @@ add_library(restic_wfx SHARED
     src/plugin_main.c
     src/wfx_interface.c
     src/wfx_interface.h
+    src/restic_process.c
+    src/restic_process.h
+    src/json_parse.c
+    src/json_parse.h
+    src/repo_config.c
+    src/repo_config.h
+    vendor/cJSON.c
+    vendor/cJSON.h
     include/fsplugin.h
     restic_wfx.def
 )
@@ -15,6 +23,7 @@ add_library(restic_wfx SHARED
 target_include_directories(restic_wfx PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor
 )
 
 # Output as .wfx64 for 64-bit Total Commander (.wfx is for 32-bit plugins)
@@ -30,6 +39,7 @@ target_compile_definitions(restic_wfx PRIVATE
 
 target_link_libraries(restic_wfx PRIVATE
     shlwapi
+    shell32
 )
 
 # Statically link MinGW C runtime to avoid external DLL dependencies

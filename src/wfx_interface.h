@@ -3,15 +3,6 @@
 
 #include "fsplugin.h"
 
-#define MAX_ENTRIES 10
-
-/* Search context used as the HANDLE returned by FsFindFirst */
-typedef struct {
-    char path[MAX_PATH];
-    int index;
-    int count;
-} SearchContext;
-
 /* A single entry in a directory listing */
 typedef struct {
     char name[MAX_PATH];
@@ -21,8 +12,18 @@ typedef struct {
     FILETIME lastWriteTime;
 } DirEntry;
 
-/* Get dummy directory entries for a given path.
-   Returns count of entries filled into the entries array. */
-int GetEntriesForPath(const char* path, DirEntry* entries, int maxEntries);
+/* Search context used as the HANDLE returned by FsFindFirst.
+   Owns the entries array — freed in FsFindClose. */
+typedef struct {
+    char path[MAX_PATH];
+    int index;              /* next item to return */
+    int count;              /* total entries */
+    DirEntry *entries;      /* heap-allocated array */
+} SearchContext;
+
+/* Get directory entries for a given path.
+   Returns heap-allocated DirEntry array (caller must free).
+   Sets *outCount to the number of entries. Returns NULL if none. */
+DirEntry* GetEntriesForPath(const char* path, int* outCount);
 
 #endif /* WFX_INTERFACE_H */
