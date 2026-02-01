@@ -5,3 +5,5 @@ EXPORTS
     FsFindNext
     FsFindClose
     FsGetDefRootName
+    FsGetFile
+    FsExecuteFile

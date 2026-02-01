@@ -14,4 +14,22 @@
 char* RunRestic(const char* repoPath, const char* password,
                 const char* args, DWORD* exitCode);
 
+/* Progress callback for RunResticDump.
+   bytesWritten: total bytes written so far
+   totalSize:    expected total size (0 if unknown)
+   userData:     opaque pointer passed through from caller
+   Return TRUE to continue, FALSE to abort. */
+typedef BOOL (*DumpProgressFunc)(LONGLONG bytesWritten, LONGLONG totalSize, void* userData);
+
+/* Run "restic dump <snapshotId> <filePath>" and write stdout to outputPath.
+   Streams data directly to file (no in-memory buffering).
+   progressCb may be NULL. exitCode may be NULL.
+   On failure or abort, partial output file is deleted.
+   Returns TRUE on success, FALSE on failure/abort. */
+BOOL RunResticDump(const char* repoPath, const char* password,
+                   const char* snapshotId, const char* filePath,
+                   const char* outputPath, LONGLONG totalSize,
+                   DumpProgressFunc progressCb, void* userData,
+                   DWORD* exitCode);
+
 #endif /* RESTIC_PROCESS_H */

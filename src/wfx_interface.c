@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <shellapi.h>
+#include <shlwapi.h>
 
 /* Global plugin state */
 static int g_PluginNr = 0;
@@ -538,4 +540,169 @@ int __stdcall FsFindClose(HANDLE Hdl) {
 void __stdcall FsGetDefRootName(char* DefRootName, int maxlen) {
     strncpy(DefRootName, "Restic Repositories", maxlen - 1);
     DefRootName[maxlen - 1] = '\0';
+}
+
+/* --- File operation helpers --- */
+
+/* Resolved components of a remote file path */
+typedef struct {
+    RepoConfig* repo;
+    char shortId[16];
+    char resticPath[MAX_PATH];
+} ResolvedPath;
+
+/* Resolve a TC RemoteName into repo, snapshot ID, and restic internal file path.
+   Returns TRUE on success. Requires numSegs==3 and non-empty rest (i.e. a file path). */
+static BOOL ResolveRemotePath(const char* remoteName, ResolvedPath* out) {
+    char seg1[MAX_PATH], seg2[MAX_PATH], seg3[MAX_PATH], rest[MAX_PATH];
+    char originalPath[MAX_PATH];
+    int numSegs;
+
+    numSegs = ParsePathSegments(remoteName, seg1, seg2, seg3, rest);
+    if (numSegs < 3 || rest[0] == '\0') return FALSE;
+
+    out->repo = RepoStore_FindByName(seg1);
+    if (!out->repo) return FALSE;
+
+    if (!RepoStore_EnsurePassword(out->repo, g_PluginNr, g_RequestProc))
+        return FALSE;
+
+    if (!ExtractShortId(seg3, out->shortId, sizeof(out->shortId)))
+        return FALSE;
+
+    if (!FindOriginalPath(out->repo, seg2, originalPath))
+        return FALSE;
+
+    BuildLsSubpath(originalPath, rest, out->resticPath, MAX_PATH);
+    return TRUE;
+}
+
+/* Data passed through the dump progress callback */
+typedef struct {
+    char remoteName[MAX_PATH];
+    char localName[MAX_PATH];
+    BOOL aborted;
+} ProgressUserData;
+
+/* Progress callback bridging RunResticDump to TC's g_ProgressProc */
+static BOOL DumpProgressCallback(LONGLONG bytesWritten, LONGLONG totalSize, void* userData) {
+    ProgressUserData* pud = (ProgressUserData*)userData;
+    int percent = 0;
+
+    if (totalSize > 0) {
+        percent = (int)((bytesWritten * 100) / totalSize);
+        if (percent > 100) percent = 100;
+    }
+
+    /* g_ProgressProc returns 1 if user wants to abort */
+    if (g_ProgressProc(g_PluginNr, pud->remoteName, pud->localName, percent)) {
+        pud->aborted = TRUE;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* --- FsGetFile: copy file from snapshot to local filesystem (F5 in TC) --- */
+
+int __stdcall FsGetFile(char* RemoteName, char* LocalName, int CopyFlags,
+                        RemoteInfoStruct* ri) {
+    ResolvedPath resolved;
+    ProgressUserData pud;
+    LONGLONG totalSize = 0;
+    DWORD exitCode;
+    BOOL ok;
+
+    /* Resume not supported for restic dump */
+    if ((CopyFlags & FS_COPYFLAGS_RESUME) && !(CopyFlags & FS_COPYFLAGS_OVERWRITE))
+        return FS_FILE_NOTSUPPORTED;
+
+    /* Check if destination exists and overwrite not requested */
+    if (!(CopyFlags & FS_COPYFLAGS_OVERWRITE)) {
+        if (GetFileAttributesA(LocalName) != INVALID_FILE_ATTRIBUTES)
+            return FS_FILE_EXISTS;
+    }
+
+    /* Resolve the remote path into repo + snapshot + restic path */
+    if (!ResolveRemotePath(RemoteName, &resolved))
+        return FS_FILE_NOTFOUND;
+
+    /* Initial progress report */
+    if (g_ProgressProc(g_PluginNr, RemoteName, LocalName, 0))
+        return FS_FILE_USERABORT;
+
+    /* Get total size for progress reporting */
+    if (ri) {
+        totalSize = ((LONGLONG)ri->SizeHigh << 32) | ri->SizeLow;
+    }
+
+    /* Set up progress user data */
+    strncpy(pud.remoteName, RemoteName, MAX_PATH - 1);
+    pud.remoteName[MAX_PATH - 1] = '\0';
+    strncpy(pud.localName, LocalName, MAX_PATH - 1);
+    pud.localName[MAX_PATH - 1] = '\0';
+    pud.aborted = FALSE;
+
+    /* Run restic dump, streaming to local file */
+    ok = RunResticDump(resolved.repo->path, resolved.repo->password,
+                       resolved.shortId, resolved.resticPath,
+                       LocalName, totalSize,
+                       DumpProgressCallback, &pud, &exitCode);
+
+    if (!ok) {
+        if (pud.aborted) return FS_FILE_USERABORT;
+        return FS_FILE_READERROR;
+    }
+
+    /* Final progress */
+    g_ProgressProc(g_PluginNr, RemoteName, LocalName, 100);
+
+    return FS_FILE_OK;
+}
+
+/* --- FsExecuteFile: open/view file from snapshot (Enter/double-click in TC) --- */
+
+int __stdcall FsExecuteFile(HWND MainWin, char* RemoteName, char* Verb) {
+    ResolvedPath resolved;
+    char tempDir[MAX_PATH];
+    char tempFile[MAX_PATH];
+    const char* fileName;
+    DWORD exitCode;
+    BOOL ok;
+
+    /* Only handle "open" verb */
+    if (strcmp(Verb, "open") != 0)
+        return FS_EXEC_YOURSELF;
+
+    /* Check if this is a file (ResolveRemotePath requires non-empty rest) */
+    if (!ResolveRemotePath(RemoteName, &resolved))
+        return FS_EXEC_YOURSELF;
+
+    /* Extract filename from RemoteName (last component after backslash) */
+    fileName = strrchr(RemoteName, '\\');
+    if (fileName) fileName++;
+    else fileName = RemoteName;
+
+    /* Build temp directory: %TEMP%\restic_wfx\ */
+    GetTempPathA(MAX_PATH, tempDir);
+    PathAppendA(tempDir, "restic_wfx");
+    CreateDirectoryA(tempDir, NULL);
+
+    /* Build temp file path: %TEMP%\restic_wfx\<shortId>_<filename> */
+    snprintf(tempFile, MAX_PATH, "%s\\%s_%s", tempDir, resolved.shortId, fileName);
+
+    /* Skip extraction if temp file already exists (cache hit) */
+    if (GetFileAttributesA(tempFile) == INVALID_FILE_ATTRIBUTES) {
+        ok = RunResticDump(resolved.repo->path, resolved.repo->password,
+                           resolved.shortId, resolved.resticPath,
+                           tempFile, 0, NULL, NULL, &exitCode);
+        if (!ok) return FS_EXEC_ERROR;
+    }
+
+    /* Open with default application */
+    if ((INT_PTR)ShellExecuteA(MainWin, "open", tempFile,
+                                NULL, NULL, SW_SHOWNORMAL) <= 32) {
+        return FS_EXEC_ERROR;
+    }
+
+    return FS_EXEC_OK;
 }

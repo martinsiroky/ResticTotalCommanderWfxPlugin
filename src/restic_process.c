@@ -117,3 +117,122 @@ char* RunRestic(const char* repoPath, const char* password,
 
     return buffer;
 }
+
+BOOL RunResticDump(const char* repoPath, const char* password,
+                   const char* snapshotId, const char* filePath,
+                   const char* outputPath, LONGLONG totalSize,
+                   DumpProgressFunc progressCb, void* userData,
+                   DWORD* exitCode) {
+    SECURITY_ATTRIBUTES sa;
+    HANDLE hReadPipe = NULL, hWritePipe = NULL;
+    HANDLE hOutFile = INVALID_HANDLE_VALUE;
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    char cmdLine[2048];
+    BYTE buf[65536];
+    DWORD bytesRead, bytesWritten;
+    LONGLONG totalWritten = 0;
+    BOOL ok, aborted = FALSE;
+
+    if (exitCode) *exitCode = (DWORD)-1;
+
+    /* Build command line */
+    snprintf(cmdLine, sizeof(cmdLine),
+             "restic -r \"%s\" dump %s \"%s\"", repoPath, snapshotId, filePath);
+
+    /* Create pipe for stdout capture */
+    memset(&sa, 0, sizeof(sa));
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+
+    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
+        return FALSE;
+    }
+    SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+
+    /* Set RESTIC_PASSWORD environment variable */
+    SetEnvironmentVariableA("RESTIC_PASSWORD", password);
+
+    /* Set up process startup info */
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdOutput = hWritePipe;
+    si.hStdError = hWritePipe;
+    si.hStdInput = NULL;
+
+    memset(&pi, 0, sizeof(pi));
+
+    ok = CreateProcessA(NULL, cmdLine, NULL, NULL, TRUE,
+                        CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+
+    /* Clear password from environment immediately */
+    SetEnvironmentVariableA("RESTIC_PASSWORD", NULL);
+
+    CloseHandle(hWritePipe);
+    hWritePipe = NULL;
+
+    if (!ok) {
+        CloseHandle(hReadPipe);
+        return FALSE;
+    }
+
+    /* Open output file */
+    hOutFile = CreateFileA(outputPath, GENERIC_WRITE, 0, NULL,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hOutFile == INVALID_HANDLE_VALUE) {
+        CloseHandle(hReadPipe);
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 5000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        return FALSE;
+    }
+
+    /* Stream pipe to file */
+    while (ReadFile(hReadPipe, buf, sizeof(buf), &bytesRead, NULL) && bytesRead > 0) {
+        if (!WriteFile(hOutFile, buf, bytesRead, &bytesWritten, NULL)) {
+            break;
+        }
+        totalWritten += bytesWritten;
+
+        if (progressCb) {
+            if (!progressCb(totalWritten, totalSize, userData)) {
+                aborted = TRUE;
+                break;
+            }
+        }
+    }
+
+    CloseHandle(hReadPipe);
+    CloseHandle(hOutFile);
+
+    if (aborted) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 5000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        DeleteFileA(outputPath);
+        if (exitCode) *exitCode = (DWORD)-1;
+        return FALSE;
+    }
+
+    /* Wait for process to finish (5 min timeout for large files) */
+    WaitForSingleObject(pi.hProcess, 300000);
+
+    if (exitCode) {
+        GetExitCodeProcess(pi.hProcess, exitCode);
+    }
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    /* Check exit code — delete partial file on error */
+    if (exitCode && *exitCode != 0) {
+        DeleteFileA(outputPath);
+        return FALSE;
+    }
+
+    return TRUE;
+}
