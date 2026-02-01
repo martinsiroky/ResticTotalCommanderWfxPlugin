@@ -2,211 +2,158 @@
 
 ## Project Overview
 
-A WFX (Wacker File System) plugin that allows Total Commander to access restic repositories. This enables browsing snapshots and files within a restic repository as if they were a regular file system.
+A WFX plugin (C, DLL) that allows Total Commander to browse restic backup repositories — navigating snapshots and their file trees as a virtual file system. Read-only by design (restic is append-only).
 
-## Core Architecture
+## Current Architecture
 
-### Plugin Structure
-- **WFX Interface Layer**: Implements Total Commander's WFX API (C/C++ DLL)
-- **Restic Bridge**: Spawns and communicates with restic CLI process
-- **Cache Layer**: Stores snapshot metadata and file listings for performance
-- **Authentication Manager**: Handles repository passwords/key files
-
-## Key Components
-
-### 1. WFX API Implementation
-
-Critical functions to implement:
-- `FsInit()` - Initialize plugin, load configuration
-- `FsFindFirst()`/`FsFindNext()` - Directory enumeration
-- `FsExecuteFile()` - Open files (trigger restic restore to temp)
-- `FsGetFile()` - Copy files from repository (restore operation)
-- `FsDisconnect()` - Clean up connections
-- `FsSetCryptCallback()` - Handle password input from Total Commander
-
-### 2. Repository Navigation Structure
-
-```
-/
-├── [Repository Name]/
-│   ├── snapshots/
-│   │   ├── 2025-01-28_10-30-00/
-│   │   │   ├── home/
-│   │   │   └── etc/
-│   │   └── 2025-01-27_10-30-00/
-│   ├── stats.txt (virtual file showing repo stats)
-│   └── config/ (virtual folder for repository info)
-```
-
-### 3. Restic Integration Strategy
-
-#### Process Communication
-- Use `restic snapshots --json` for snapshot listing
-- Use `restic ls --json <snapshot>` for file listings
-- Use `restic restore` to temp directory for file access
-- Use `restic stats` for repository information
-
-#### Caching Strategy
-- Cache snapshot list (refresh on demand or timer)
-- Cache directory listings per snapshot
-- Implement TTL for cache entries
-- Store cache in `%APPDATA%\TotalCommander\ResticWFX\`
-
-## Implementation Plan
-
-### Phase 1: Foundation (Week 1-2)
-1. Set up C++ project with WFX plugin template
-2. Implement basic WFX skeleton with dummy data
-3. Test plugin loads in Total Commander
-4. Implement configuration dialog for repository path and password
-
-### Phase 2: Restic Integration (Week 3-4)
-1. Implement process spawning for restic commands
-2. Parse JSON output from restic
-3. Build snapshot listing functionality
-4. Implement directory traversal for snapshots
-
-### Phase 3: File Operations (Week 5-6)
-1. Implement file restoration to temporary directory
-2. Handle file copying from repository
-3. Implement file preview/opening
-4. Add progress callbacks for long operations
-
-### Phase 4: Polish & Features (Week 7-8)
-1. Add caching layer for performance
-2. Implement background refresh
-3. Add repository statistics view
-4. Error handling and logging
-5. Configuration persistence
-
-## Technical Considerations
-
-### Language Choice
-- **C++** is recommended for WFX plugins (native Total Commander API)
-- Consider using Java via JNI if you prefer, but adds complexity
-- Alternative: Use C++ for WFX wrapper, shell out to Java for restic logic
-
-### Challenges
-- **Read-only nature**: Restic repositories are append-only; implement accordingly
-- **Performance**: File listings can be slow; aggressive caching needed
-- **Password management**: Secure storage of repository passwords
-- **Large repositories**: Handle repositories with thousands of snapshots
-- **Network repositories**: Support for REST, S3, SFTP backend types
-
-### Dependencies
-- WFX Plugin SDK from Total Commander
-- JSON parsing library (e.g., nlohmann/json for C++)
-- Process execution library
-- Restic binary (must be in PATH or configured)
-
-## Configuration File Format
-
-```ini
-[Repository1]
-Path=C:\backup\restic-repo
-Type=local
-Password=encrypted_password_hash
-CacheTimeout=300
-
-[Repository2]
-Path=s3:s3.amazonaws.com/my-bucket
-Type=s3
-Password=encrypted_password_hash
-CacheTimeout=300
-```
-
-## Java Integration Option
-
-If you prefer to use Java for business logic:
-
-1. Create JNI wrapper DLL in C++ (implements WFX API)
-2. Java application handles restic communication
-3. Use JNI to call Java methods from C++ WFX callbacks
-4. Package JRE with plugin or require Java installation
-
-### Architecture with Java
 ```
 Total Commander
-    ↓
-WFX Plugin (C++ DLL)
-    ↓ JNI
-Java Layer
-    ↓
-Restic CLI Process
+    ↓ WFX API (stdcall)
+restic_wfx.wfx64  (64-bit DLL, C11, MinGW)
+    ↓ CreateProcessA + pipe
+restic.exe CLI  (must be in PATH)
+    ↓ JSON stdout
+cJSON parser
 ```
 
-## File Structure
+### Source Files
 
 ```
 restic-wfx-plugin/
+├── CMakeLists.txt              # CMake 3.15+, C11, output: restic_wfx.wfx64
+├── restic_wfx.def              # DLL exports: FsInit, FsFindFirst/Next/Close, FsGetDefRootName
+├── include/
+│   └── fsplugin.h              # TC WFX SDK header (v2.1)
 ├── src/
-│   ├── cpp/
-│   │   ├── wfx_interface.cpp      # WFX API implementation
-│   │   ├── plugin_main.cpp        # DLL entry point
-│   │   └── jni_bridge.cpp         # Optional: JNI integration
-│   ├── java/                      # Optional: If using Java
-│   │   ├── ResticBridge.java
-│   │   ├── SnapshotManager.java
-│   │   └── CacheManager.java
-│   └── include/
-│       ├── wfxplugin.h           # Total Commander WFX header
-│       └── restic_types.h
-├── resources/
-│   ├── config.ini
-│   └── icon.ico
-├── docs/
-│   ├── API_REFERENCE.md
-│   └── USER_GUIDE.md
-└── CMakeLists.txt
+│   ├── plugin_main.c           # DllMain entry point
+│   ├── wfx_interface.h         # DirEntry, SearchContext structs
+│   ├── wfx_interface.c         # WFX API + navigation logic + snapshot browsing
+│   ├── restic_process.h        # RunRestic() declaration
+│   ├── restic_process.c        # Spawn restic, capture stdout via pipe
+│   ├── json_parse.h            # ResticSnapshot, ResticLsEntry structs, parse functions
+│   ├── json_parse.c            # Parse snapshots JSON + ls NDJSON output
+│   ├── repo_config.h           # RepoConfig, RepoStore structs
+│   └── repo_config.c           # INI config read/write, add-repo dialog
+└── vendor/
+    ├── cJSON.c                 # Third-party JSON library
+    └── cJSON.h
 ```
 
-## Next Steps
+## Navigation Structure (Implemented)
 
-1. Download Total Commander WFX Plugin SDK
-2. Set up development environment (Visual Studio or MinGW)
-3. Create basic plugin skeleton
-4. Test with Total Commander
-5. Implement restic command execution
-6. Add snapshot browsing functionality
-7. Implement file restoration and access
+```
+\                                           → Level 0: list repositories + [Add Repository]
+\RepoName\                                  → Level 1: unique sanitized backup paths
+\RepoName\D_Fotky_Mix\                      → Level 2: snapshots matching that path (newest first)
+\RepoName\D_Fotky_Mix\2025-01-28 10-30-05 (fb4ed15b)\          → Level 3+: files & folders
+\RepoName\D_Fotky_Mix\2025-01-28 10-30-05 (fb4ed15b)\subdir\   → deeper subdirectories
+```
 
-## Resources
+### Path Handling
 
-- Total Commander WFX Plugin SDK: https://www.ghisler.com/sdk.htm
-- Restic Documentation: https://restic.readthedocs.io/
-- WFX Plugin Examples: Available in Total Commander SDK
+- **Sanitization** (display): `D:\Fotky\Mix` → `D_Fotky_Mix` (replace `\/:` with `_`, strip edges)
+- **Restic internal format**: `D:\Fotky\Mix` → `/D/Fotky/Mix` (strip colon, prepend `/`, forward slashes)
+- **Snapshot display name**: `YYYY-MM-DD HH-MM-SS (shortId)` — short ID extracted for restic commands
 
-## Security Considerations
+## Restic Commands Used
 
-- Never store passwords in plaintext
-- Use Windows DPAPI for password encryption on Windows
-- Implement secure memory handling for sensitive data
-- Clear temporary files after use
-- Validate all restic command outputs
-- Implement timeout for long-running operations
+| Command | Purpose | Called From |
+|---------|---------|-------------|
+| `restic -r "<repo>" snapshots --json` | List all snapshots | `FetchSnapshots()` |
+| `restic -r "<repo>" ls --json <shortId> "<path>"` | List files in snapshot directory | `GetSnapshotContents()` |
+| `restic -r "<repo>" snapshots` | Validate repo on add (no --json) | `RepoStore_PromptAdd()` |
 
-## Performance Optimization
+Password passed via `RESTIC_PASSWORD` env var, cleared immediately after process spawn.
 
-- Implement lazy loading for large directory trees
-- Cache aggressively but with proper invalidation
-- Use background threads for restic operations
-- Implement progress callbacks for user feedback
-- Consider pagination for very large snapshot lists
+## Implemented Features (Phase 1 + 2 complete)
 
-## Error Handling
+- [x] Plugin skeleton: FsInit, FsFindFirst/Next/Close, FsGetDefRootName
+- [x] Repository management: add repos via dialog, persist in INI, password prompt
+- [x] Snapshot listing: parse `restic snapshots --json`, sort newest-first
+- [x] Backup path grouping: deduplicate paths across snapshots, sanitize for display
+- [x] Snapshot content browsing: `restic ls --json`, NDJSON parsing, direct-child filtering
+- [x] Nested directory navigation: arbitrary depth via `rest` path segment
+- [x] File metadata: sizes (64-bit), modification times, directory vs file distinction
+- [x] UTF-8 → ANSI conversion for international filenames
+- [x] Secure password handling: in-memory only, `SecureZeroMemory`, env var cleared
+- [x] Config persistence: `%APPDATA%\TotalCmd\restic_wfx.ini`
 
-- Gracefully handle missing restic binary
-- Handle corrupted repositories
-- Provide meaningful error messages to users
-- Log errors for debugging
-- Implement retry logic for network operations
+## Data Structures
+
+```c
+DirEntry        { name, isDirectory, fileSizeLow, fileSizeHigh, lastWriteTime }
+SearchContext   { path, index, count, *entries }
+ResticSnapshot  { id[65], shortId[16], time[32], hostname[128], paths[8][MAX_PATH], pathCount }
+ResticLsEntry   { name[MAX_PATH], path[MAX_PATH], type[16], sizeLow, sizeHigh, mtime[32] }
+RepoConfig      { name[64], path[512], password[256], configured, hasPassword }
+RepoStore       { repos[16], count, configFilePath }
+```
+
+## Next Phase: File Operations (Phase 3)
+
+### Required WFX Functions
+
+1. **`FsGetFile()`** — Copy file from restic snapshot to local filesystem
+   - Run `restic restore <snapshotId> --target <tempDir> --include "<filePath>"`
+   - Copy restored file to destination
+   - Clean up temp directory
+   - Report progress via `g_ProgressProc` callback
+
+2. **`FsExecuteFile()`** — Open/view file from snapshot
+   - Restore to temp directory
+   - Return `FS_EXEC_YOURSELF` or launch with `ShellExecute`
+   - Consider: keep temp files until plugin unloads?
+
+### Implementation Details
+
+- Extract snapshot ID + file path from TC path segments
+- Convert TC path back to restic internal format (`/D/Fotky/Mix/file.jpg`)
+- Use `restic restore` with `--include` for single-file extraction
+- Temp directory: `%TEMP%\restic_wfx\<shortId>\`
+- Progress callbacks for large file restores
+- Export new functions in `restic_wfx.def`
+
+## Phase 4: Polish & Performance
+
+- [ ] Cache snapshot list per-repo (TTL-based, avoid re-fetching on every navigation)
+- [ ] Cache directory listings per snapshot+path
+- [ ] Progress callbacks for long `restic ls` operations
+- [ ] Better error messages (missing restic binary, wrong password, network errors)
+- [ ] FsDisconnect() for cleanup
+- [ ] FsSetCryptCallback() for TC password manager integration
+- [ ] Repository statistics virtual file
+
+## Limits
+
+| Constant | Value |
+|----------|-------|
+| MAX_REPOS | 16 |
+| MAX_SNAP_PATHS | 8 per snapshot |
+| MAX_REPO_NAME | 64 bytes |
+| MAX_REPO_PATH | 512 bytes |
+| MAX_REPO_PASS | 256 bytes |
+| Process timeout | 120 seconds |
+
+## Build
+
+```bash
+cmake -B build -G "MinGW Makefiles"
+cmake --build build
+# Output: build/restic_wfx.wfx64
+```
+
+## Dependencies
+
+- **Build**: CMake 3.15+, MinGW-w64 (C11)
+- **Runtime**: restic.exe in PATH, Total Commander (64-bit for .wfx64)
+- **Bundled**: cJSON (vendor/), WFX SDK header (include/fsplugin.h)
+- **Linked**: shlwapi, shell32, static libgcc (MinGW)
 
 ## Future Enhancements
 
-- Support for restic backup creation
-- Snapshot comparison functionality
+- Snapshot comparison / diff view
 - Search within snapshots
-- Mount snapshots as drive letters
-- Integration with Windows Explorer context menu
-- Multi-repository management
-- Snapshot tagging and annotation
+- Restic backup creation from TC
+- Mount snapshots as drive letters (via restic mount)
+- Support for restic password files / key files
+- Windows DPAPI for encrypted password storage

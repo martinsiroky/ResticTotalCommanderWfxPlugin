@@ -35,13 +35,14 @@ static void AddEntry(DirEntry** entries, int* count, int* capacity,
    path: e.g. "\\RepoName\\snapshots"
    seg1, seg2, seg3: output buffers (MAX_PATH each), filled with segments or empty string.
    Returns number of segments (0 for root "\\"). */
-static int ParsePathSegments(const char* path, char* seg1, char* seg2, char* seg3) {
+static int ParsePathSegments(const char* path, char* seg1, char* seg2, char* seg3, char* rest) {
     const char* p;
     int segCount = 0;
 
     seg1[0] = '\0';
     seg2[0] = '\0';
     seg3[0] = '\0';
+    rest[0] = '\0';
 
     if (!path || strcmp(path, "\\") == 0) return 0;
 
@@ -87,6 +88,14 @@ static int ParsePathSegments(const char* path, char* seg1, char* seg2, char* seg
         memcpy(seg3, p, len);
         seg3[len] = '\0';
         segCount = 3;
+        p = end;
+    }
+
+    /* Rest: everything after segment 3 */
+    if (*p == '\\') p++;
+    if (*p != '\0') {
+        strncpy(rest, p, MAX_PATH - 1);
+        rest[MAX_PATH - 1] = '\0';
     }
 
     return segCount;
@@ -137,7 +146,7 @@ static int FetchSnapshots(RepoConfig* repo, ResticSnapshot** outSnapshots) {
     int numSnaps;
 
     *outSnapshots = NULL;
-    output = RunRestic(repo->path, repo->password, "snapshots", &exitCode);
+    output = RunRestic(repo->path, repo->password, "snapshots --json", &exitCode);
     if (!output || exitCode != 0) {
         free(output);
         return 0;
@@ -247,17 +256,155 @@ static DirEntry* GetSnapshotsForPath(RepoConfig* repo, const char* sanitizedPath
     return entries;
 }
 
+/* Extract the short snapshot ID from a display name like "2025-01-28 10-30-05 (196bc576)". */
+static BOOL ExtractShortId(const char* displayName, char* shortId, int maxLen) {
+    const char* open = strrchr(displayName, '(');
+    const char* close = strrchr(displayName, ')');
+    int len;
+
+    if (!open || !close || close <= open + 1) return FALSE;
+
+    open++; /* skip '(' */
+    len = (int)(close - open);
+    if (len >= maxLen) len = maxLen - 1;
+
+    memcpy(shortId, open, len);
+    shortId[len] = '\0';
+    return TRUE;
+}
+
+/* Find the original backup path that matches a sanitized name. */
+static BOOL FindOriginalPath(RepoConfig* repo, const char* sanitizedName, char* originalPath) {
+    ResticSnapshot* snapshots = NULL;
+    int numSnaps, i, j;
+
+    numSnaps = FetchSnapshots(repo, &snapshots);
+    if (numSnaps == 0) return FALSE;
+
+    for (i = 0; i < numSnaps; i++) {
+        for (j = 0; j < snapshots[i].pathCount; j++) {
+            char sanitized[MAX_PATH];
+            SanitizePath(snapshots[i].paths[j], sanitized, MAX_PATH);
+            if (strcmp(sanitized, sanitizedName) == 0) {
+                strncpy(originalPath, snapshots[i].paths[j], MAX_PATH - 1);
+                originalPath[MAX_PATH - 1] = '\0';
+                free(snapshots);
+                return TRUE;
+            }
+        }
+    }
+
+    free(snapshots);
+    return FALSE;
+}
+
+/* Convert backslashes to forward slashes in-place. */
+static void BackslashToForwardSlash(char* path) {
+    char* p;
+    for (p = path; *p; p++) {
+        if (*p == '\\') *p = '/';
+    }
+}
+
+/* Convert a Windows drive path to restic's internal format.
+   e.g. "d:\Fotky\Mix" -> "/d/Fotky/Mix"
+        "C:\Users"      -> "/C/Users"
+   If the path doesn't start with a drive letter, just normalize slashes. */
+static void ToResticInternalPath(const char* winPath, char* outPath, int maxLen) {
+    /* Check for drive letter pattern: "X:" or "X:\" */
+    if (winPath[0] != '\0' && winPath[1] == ':' &&
+        ((winPath[0] >= 'A' && winPath[0] <= 'Z') || (winPath[0] >= 'a' && winPath[0] <= 'z'))) {
+        /* Convert "D:\Fotky\Mix" -> "/D/Fotky/Mix" */
+        snprintf(outPath, maxLen, "/%c%s", winPath[0], winPath + 2);
+    } else {
+        strncpy(outPath, winPath, maxLen - 1);
+        outPath[maxLen - 1] = '\0';
+    }
+    BackslashToForwardSlash(outPath);
+}
+
+/* Build the restic ls subpath from original backup path + TC subpath remainder.
+   Converts to restic's internal path format: /d/Fotky/Mix */
+static void BuildLsSubpath(const char* originalBackupPath, const char* rest, char* outPath, int maxLen) {
+    char temp[MAX_PATH];
+
+    if (rest[0] != '\0') {
+        snprintf(temp, sizeof(temp), "%s/%s", originalBackupPath, rest);
+    } else {
+        strncpy(temp, originalBackupPath, MAX_PATH - 1);
+        temp[MAX_PATH - 1] = '\0';
+    }
+    ToResticInternalPath(temp, outPath, maxLen);
+}
+
+/* List directory contents inside a snapshot. */
+static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath,
+                                      const char* snapshotDisplayName, const char* subpath,
+                                      int* outCount) {
+    DirEntry* entries = NULL;
+    int count = 0, capacity = 0;
+    char shortId[16];
+    char originalPath[MAX_PATH];
+    char lsSubpath[MAX_PATH];
+    char args[MAX_PATH * 2];
+    char* output;
+    DWORD exitCode;
+    ResticLsEntry* lsEntries = NULL;
+    int numLsEntries, i;
+
+    *outCount = 0;
+
+    if (!ExtractShortId(snapshotDisplayName, shortId, sizeof(shortId))) {
+        return NULL;
+    }
+
+    if (!FindOriginalPath(repo, sanitizedPath, originalPath)) {
+        return NULL;
+    }
+
+    BuildLsSubpath(originalPath, subpath, lsSubpath, MAX_PATH);
+
+    snprintf(args, sizeof(args), "ls --json %s \"%s\"", shortId, lsSubpath);
+
+    output = RunRestic(repo->path, repo->password, args, &exitCode);
+    if (!output || exitCode != 0) {
+        free(output);
+        return NULL;
+    }
+
+    numLsEntries = ParseLsOutput(output, lsSubpath, &lsEntries);
+    free(output);
+
+    if (numLsEntries <= 0) {
+        free(lsEntries);
+        *outCount = 0;
+        return NULL;
+    }
+
+    for (i = 0; i < numLsEntries; i++) {
+        BOOL isDir = (strcmp(lsEntries[i].type, "dir") == 0);
+        FILETIME ft = ParseISOTime(lsEntries[i].mtime);
+        AddEntry(&entries, &count, &capacity,
+                 lsEntries[i].name, isDir,
+                 lsEntries[i].sizeLow, lsEntries[i].sizeHigh, ft);
+    }
+
+    free(lsEntries);
+    *outCount = count;
+    return entries;
+}
+
 /* Returns heap-allocated directory entries for the given path. */
 DirEntry* GetEntriesForPath(const char* path, int* outCount) {
     DirEntry* entries = NULL;
     int count = 0;
     int capacity = 0;
-    char seg1[MAX_PATH], seg2[MAX_PATH], seg3[MAX_PATH];
+    char seg1[MAX_PATH], seg2[MAX_PATH], seg3[MAX_PATH], rest[MAX_PATH];
     int numSegs;
     FILETIME ftNow;
 
     *outCount = 0;
-    numSegs = ParsePathSegments(path, seg1, seg2, seg3);
+    numSegs = ParsePathSegments(path, seg1, seg2, seg3, rest);
 
     /* Get a reasonable "now" timestamp for virtual entries */
     GetSystemTimeAsFileTime(&ftNow);
@@ -298,7 +445,13 @@ DirEntry* GetEntriesForPath(const char* path, int* outCount) {
             entries = GetSnapshotsForPath(repo, seg2, &count);
         }
     }
-    /* numSegs >= 3: inside a snapshot — Phase 3 will handle this */
+    else if (numSegs == 3) {
+        /* Inside a snapshot: browse files/folders */
+        RepoConfig* repo = RepoStore_FindByName(seg1);
+        if (repo && RepoStore_EnsurePassword(repo, g_PluginNr, g_RequestProc)) {
+            entries = GetSnapshotContents(repo, seg2, seg3, rest, &count);
+        }
+    }
 
     *outCount = count;
     return entries;

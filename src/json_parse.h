@@ -25,4 +25,25 @@ int ParseSnapshots(const char* json, ResticSnapshot** outSnapshots);
    Returns the FILETIME (zeroed on parse failure). */
 FILETIME ParseISOTime(const char* timeStr);
 
+/* Convert UTF-8 string to the system ANSI codepage. */
+void Utf8ToAnsi(const char* utf8, char* ansi, int ansiSize);
+
+/* A single entry from `restic ls --json` output */
+typedef struct {
+    char name[MAX_PATH];      /* file/folder name (last path component) */
+    char path[MAX_PATH];      /* full path within the snapshot */
+    char type[16];            /* "file", "dir", or "symlink" */
+    DWORD sizeLow;
+    DWORD sizeHigh;
+    char mtime[32];           /* ISO 8601 modification time */
+} ResticLsEntry;
+
+/* Parse NDJSON output from `restic ls --json`.
+   Filters to only direct children of parentPath.
+   ndjson: raw NDJSON string (one JSON object per line)
+   parentPath: directory path to list children for (forward slashes)
+   outEntries: receives a malloc'd array of ResticLsEntry (caller must free)
+   Returns the number of entries, or -1 on error. */
+int ParseLsOutput(const char* ndjson, const char* parentPath, ResticLsEntry** outEntries);
+
 #endif /* JSON_PARSE_H */

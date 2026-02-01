@@ -19,7 +19,7 @@ char* RunRestic(const char* repoPath, const char* password,
     if (exitCode) *exitCode = (DWORD)-1;
 
     /* Build command line */
-    snprintf(cmdLine, sizeof(cmdLine), "restic -r \"%s\" --json %s", repoPath, args);
+    snprintf(cmdLine, sizeof(cmdLine), "restic -r \"%s\" %s", repoPath, args);
 
     /* Create pipe for stdout capture */
     memset(&sa, 0, sizeof(sa));
@@ -105,8 +105,8 @@ char* RunRestic(const char* repoPath, const char* password,
 
     CloseHandle(hReadPipe);
 
-    /* Wait for process to finish (30 second timeout) */
-    WaitForSingleObject(pi.hProcess, 30000);
+    /* Wait for process to finish (120 second timeout for large snapshot listings) */
+    WaitForSingleObject(pi.hProcess, 120000);
 
     if (exitCode) {
         GetExitCodeProcess(pi.hProcess, exitCode);
