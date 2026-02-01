@@ -3,13 +3,25 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Convert a UTF-8 string to a malloc'd wide string. Caller must free. */
+static WCHAR* Utf8ToWide(const char* utf8) {
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
+    if (wlen <= 0) return NULL;
+    WCHAR* wbuf = (WCHAR*)malloc(wlen * sizeof(WCHAR));
+    if (wbuf) {
+        MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wbuf, wlen);
+    }
+    return wbuf;
+}
+
 char* RunRestic(const char* repoPath, const char* password,
                 const char* args, DWORD* exitCode) {
     SECURITY_ATTRIBUTES sa;
     HANDLE hReadPipe = NULL, hWritePipe = NULL;
-    STARTUPINFOA si;
+    STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     char cmdLine[2048];
+    WCHAR* wCmdLine = NULL;
     char* buffer = NULL;
     DWORD bufSize = 4096;
     DWORD totalRead = 0;
@@ -18,8 +30,28 @@ char* RunRestic(const char* repoPath, const char* password,
 
     if (exitCode) *exitCode = (DWORD)-1;
 
-    /* Build command line */
-    snprintf(cmdLine, sizeof(cmdLine), "restic -r \"%s\" %s", repoPath, args);
+    /* Convert ANSI repo path to UTF-8 so the entire cmdLine is UTF-8 */
+    char repoPathUtf8[MAX_PATH];
+    {
+        int wlen = MultiByteToWideChar(CP_ACP, 0, repoPath, -1, NULL, 0);
+        if (wlen > 0) {
+            WCHAR* wbuf = (WCHAR*)malloc(wlen * sizeof(WCHAR));
+            if (wbuf) {
+                MultiByteToWideChar(CP_ACP, 0, repoPath, -1, wbuf, wlen);
+                WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, repoPathUtf8, MAX_PATH, NULL, NULL);
+                free(wbuf);
+            } else {
+                strncpy(repoPathUtf8, repoPath, MAX_PATH - 1);
+                repoPathUtf8[MAX_PATH - 1] = '\0';
+            }
+        } else {
+            strncpy(repoPathUtf8, repoPath, MAX_PATH - 1);
+            repoPathUtf8[MAX_PATH - 1] = '\0';
+        }
+    }
+
+    /* Build command line (fully UTF-8, will be converted to wide) */
+    snprintf(cmdLine, sizeof(cmdLine), "restic -r \"%s\" %s", repoPathUtf8, args);
 
     /* Create pipe for stdout capture */
     memset(&sa, 0, sizeof(sa));
@@ -48,10 +80,19 @@ char* RunRestic(const char* repoPath, const char* password,
 
     memset(&pi, 0, sizeof(pi));
 
-    /* Create the restic process */
-    ok = CreateProcessA(
+    /* Convert UTF-8 command line to wide for CreateProcessW */
+    wCmdLine = Utf8ToWide(cmdLine);
+    if (!wCmdLine) {
+        CloseHandle(hReadPipe);
+        CloseHandle(hWritePipe);
+        SetEnvironmentVariableA("RESTIC_PASSWORD", NULL);
+        return NULL;
+    }
+
+    /* Create the restic process (wide version for correct Unicode paths) */
+    ok = CreateProcessW(
         NULL,           /* lpApplicationName */
-        cmdLine,        /* lpCommandLine */
+        wCmdLine,       /* lpCommandLine */
         NULL,           /* lpProcessAttributes */
         NULL,           /* lpThreadAttributes */
         TRUE,           /* bInheritHandles */
@@ -61,6 +102,8 @@ char* RunRestic(const char* repoPath, const char* password,
         &si,
         &pi
     );
+
+    free(wCmdLine);
 
     /* Clear the password from environment immediately */
     SetEnvironmentVariableA("RESTIC_PASSWORD", NULL);
@@ -126,9 +169,10 @@ BOOL RunResticDump(const char* repoPath, const char* password,
     SECURITY_ATTRIBUTES sa;
     HANDLE hReadPipe = NULL, hWritePipe = NULL;
     HANDLE hOutFile = INVALID_HANDLE_VALUE;
-    STARTUPINFOA si;
+    STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     char cmdLine[2048];
+    WCHAR* wCmdLine = NULL;
     BYTE buf[65536];
     DWORD bytesRead, bytesWritten;
     LONGLONG totalWritten = 0;
@@ -136,9 +180,29 @@ BOOL RunResticDump(const char* repoPath, const char* password,
 
     if (exitCode) *exitCode = (DWORD)-1;
 
-    /* Build command line */
+    /* Convert ANSI repo path to UTF-8 so the entire cmdLine is UTF-8 */
+    char repoPathUtf8[MAX_PATH];
+    {
+        int wlen = MultiByteToWideChar(CP_ACP, 0, repoPath, -1, NULL, 0);
+        if (wlen > 0) {
+            WCHAR* wbuf = (WCHAR*)malloc(wlen * sizeof(WCHAR));
+            if (wbuf) {
+                MultiByteToWideChar(CP_ACP, 0, repoPath, -1, wbuf, wlen);
+                WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, repoPathUtf8, MAX_PATH, NULL, NULL);
+                free(wbuf);
+            } else {
+                strncpy(repoPathUtf8, repoPath, MAX_PATH - 1);
+                repoPathUtf8[MAX_PATH - 1] = '\0';
+            }
+        } else {
+            strncpy(repoPathUtf8, repoPath, MAX_PATH - 1);
+            repoPathUtf8[MAX_PATH - 1] = '\0';
+        }
+    }
+
+    /* Build command line (fully UTF-8, will be converted to wide) */
     snprintf(cmdLine, sizeof(cmdLine),
-             "restic -r \"%s\" dump %s \"%s\"", repoPath, snapshotId, filePath);
+             "restic -r \"%s\" dump %s \"%s\"", repoPathUtf8, snapshotId, filePath);
 
     /* Create pipe for stdout capture */
     memset(&sa, 0, sizeof(sa));
@@ -164,8 +228,19 @@ BOOL RunResticDump(const char* repoPath, const char* password,
 
     memset(&pi, 0, sizeof(pi));
 
-    ok = CreateProcessA(NULL, cmdLine, NULL, NULL, TRUE,
+    /* Convert UTF-8 command line to wide for CreateProcessW */
+    wCmdLine = Utf8ToWide(cmdLine);
+    if (!wCmdLine) {
+        CloseHandle(hReadPipe);
+        CloseHandle(hWritePipe);
+        SetEnvironmentVariableA("RESTIC_PASSWORD", NULL);
+        return FALSE;
+    }
+
+    ok = CreateProcessW(NULL, wCmdLine, NULL, NULL, TRUE,
                         CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+
+    free(wCmdLine);
 
     /* Clear password from environment immediately */
     SetEnvironmentVariableA("RESTIC_PASSWORD", NULL);

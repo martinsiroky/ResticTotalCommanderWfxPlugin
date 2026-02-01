@@ -14,6 +14,69 @@ static tProgressProc g_ProgressProc = NULL;
 static tLogProc g_LogProc = NULL;
 static tRequestProc g_RequestProc = NULL;
 
+/* --- Snapshot list cache (TTL-based, per repo) --- */
+
+#define SNAPSHOT_CACHE_TTL_MS 300000  /* 5 minutes */
+
+typedef struct {
+    char repoName[MAX_REPO_NAME];
+    ResticSnapshot* snapshots;
+    int count;
+    ULONGLONG fetchTimeMs;
+} SnapshotCache;
+
+static SnapshotCache g_SnapCache[MAX_REPOS];
+static int g_SnapCacheCount = 0;
+
+/* Deep-copy a snapshot array. Caller must free the returned pointer. */
+static ResticSnapshot* CopySnapshots(const ResticSnapshot* src, int count) {
+    ResticSnapshot* copy;
+    if (count <= 0 || !src) return NULL;
+    copy = (ResticSnapshot*)malloc(sizeof(ResticSnapshot) * count);
+    if (copy) memcpy(copy, src, sizeof(ResticSnapshot) * count);
+    return copy;
+}
+
+/* Invalidate snapshot cache for a specific repo (e.g. on password change). */
+static void InvalidateSnapshotCache(const char* repoName) {
+    int i;
+    for (i = 0; i < g_SnapCacheCount; i++) {
+        if (strcmp(g_SnapCache[i].repoName, repoName) == 0) {
+            free(g_SnapCache[i].snapshots);
+            g_SnapCache[i].snapshots = NULL;
+            /* Move last entry into this slot */
+            g_SnapCacheCount--;
+            if (i < g_SnapCacheCount) {
+                g_SnapCache[i] = g_SnapCache[g_SnapCacheCount];
+            }
+            return;
+        }
+    }
+}
+
+/* --- Directory listing cache (immutable, keyed on shortId+path) --- */
+
+#define LS_CACHE_MAX 32
+
+typedef struct {
+    char shortId[16];
+    char path[MAX_PATH];
+    DirEntry* entries;
+    int count;
+} LsCacheEntry;
+
+static LsCacheEntry g_LsCache[LS_CACHE_MAX];
+static int g_LsCacheCount = 0;
+
+/* Deep-copy a DirEntry array. Caller must free the returned pointer. */
+static DirEntry* CopyDirEntries(const DirEntry* src, int count) {
+    DirEntry* copy;
+    if (count <= 0 || !src) return NULL;
+    copy = (DirEntry*)malloc(sizeof(DirEntry) * count);
+    if (copy) memcpy(copy, src, sizeof(DirEntry) * count);
+    return copy;
+}
+
 /* Helper: add an entry to a dynamic array. Grows the array as needed. */
 static void AddEntry(DirEntry** entries, int* count, int* capacity,
                      const char* name, BOOL isDir,
@@ -141,22 +204,74 @@ static void SanitizePath(const char* raw, char* out, int maxLen) {
     }
 }
 
-/* Fetch and parse all snapshots for a repo. Returns count, caller frees *outSnapshots. */
+/* Fetch and parse all snapshots for a repo. Returns count, caller frees *outSnapshots.
+   Uses TTL-based cache to avoid repeated restic calls. */
 static int FetchSnapshots(RepoConfig* repo, ResticSnapshot** outSnapshots) {
     char* output;
     DWORD exitCode;
-    int numSnaps;
+    int numSnaps, i;
+    ULONGLONG now;
 
     *outSnapshots = NULL;
+
+    /* Check snapshot cache */
+    now = GetTickCount64();
+    for (i = 0; i < g_SnapCacheCount; i++) {
+        if (strcmp(g_SnapCache[i].repoName, repo->name) == 0) {
+            if (now - g_SnapCache[i].fetchTimeMs < SNAPSHOT_CACHE_TTL_MS) {
+                /* Cache hit — return deep copy */
+                *outSnapshots = CopySnapshots(g_SnapCache[i].snapshots, g_SnapCache[i].count);
+                return (*outSnapshots) ? g_SnapCache[i].count : 0;
+            }
+            /* Cache expired — remove it */
+            free(g_SnapCache[i].snapshots);
+            g_SnapCacheCount--;
+            if (i < g_SnapCacheCount)
+                g_SnapCache[i] = g_SnapCache[g_SnapCacheCount];
+            break;
+        }
+    }
+
+    /* Cache miss — fetch from restic */
     output = RunRestic(repo->path, repo->password, "snapshots --json", &exitCode);
-    if (!output || exitCode != 0) {
+    if (!output) {
+        if (g_LogProc)
+            g_LogProc(g_PluginNr, MSGTYPE_IMPORTANTERROR,
+                      "Error: Could not run restic. Is restic.exe in PATH?");
+        return 0;
+    }
+    if (exitCode != 0) {
+        if (g_RequestProc) {
+            char msg[512];
+            snprintf(msg, sizeof(msg),
+                     "Failed to load snapshots. Check password and repository path.\n\n%.*s",
+                     256, output);
+            g_RequestProc(g_PluginNr, RT_MsgOK, "Restic Error", msg, output, MAX_PATH);
+        }
+        /* Invalidate cached password so user is re-prompted next time */
+        repo->hasPassword = FALSE;
+        repo->password[0] = '\0';
+        InvalidateSnapshotCache(repo->name);
         free(output);
         return 0;
     }
 
     numSnaps = ParseSnapshots(output, outSnapshots);
     free(output);
-    return (numSnaps > 0) ? numSnaps : 0;
+    if (numSnaps <= 0) return 0;
+
+    /* Store in cache */
+    if (g_SnapCacheCount < MAX_REPOS) {
+        SnapshotCache* sc = &g_SnapCache[g_SnapCacheCount];
+        strncpy(sc->repoName, repo->name, MAX_REPO_NAME - 1);
+        sc->repoName[MAX_REPO_NAME - 1] = '\0';
+        sc->snapshots = CopySnapshots(*outSnapshots, numSnaps);
+        sc->count = numSnaps;
+        sc->fetchTimeMs = now;
+        if (sc->snapshots) g_SnapCacheCount++;
+    }
+
+    return numSnaps;
 }
 
 /* List unique backup paths from all snapshots as folder entries */
@@ -339,7 +454,7 @@ static void BuildLsSubpath(const char* originalBackupPath, const char* rest, cha
     ToResticInternalPath(temp, outPath, maxLen);
 }
 
-/* List directory contents inside a snapshot. */
+/* List directory contents inside a snapshot. Uses cache for repeat visits. */
 static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath,
                                       const char* snapshotDisplayName, const char* subpath,
                                       int* outCount) {
@@ -366,15 +481,40 @@ static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath
 
     BuildLsSubpath(originalPath, subpath, lsSubpath, MAX_PATH);
 
-    snprintf(args, sizeof(args), "ls --json %s \"%s\"", shortId, lsSubpath);
+    /* Convert ANSI path to UTF-8 for restic command and path comparisons */
+    char lsSubpathUtf8[MAX_PATH];
+    AnsiToUtf8(lsSubpath, lsSubpathUtf8, MAX_PATH);
+
+    /* Check directory listing cache (keyed on UTF-8 path) */
+    for (i = 0; i < g_LsCacheCount; i++) {
+        if (strcmp(g_LsCache[i].shortId, shortId) == 0 &&
+            strcmp(g_LsCache[i].path, lsSubpathUtf8) == 0) {
+            /* Cache hit — return deep copy */
+            *outCount = g_LsCache[i].count;
+            return CopyDirEntries(g_LsCache[i].entries, g_LsCache[i].count);
+        }
+    }
+
+    /* Cache miss — fetch from restic (pass UTF-8 path) */
+    snprintf(args, sizeof(args), "ls --json %s \"%s\"", shortId, lsSubpathUtf8);
 
     output = RunRestic(repo->path, repo->password, args, &exitCode);
-    if (!output || exitCode != 0) {
+    if (!output) {
+        if (g_LogProc)
+            g_LogProc(g_PluginNr, MSGTYPE_IMPORTANTERROR,
+                      "Error: Could not run restic. Is restic.exe in PATH?");
+        return NULL;
+    }
+    if (exitCode != 0) {
+        if (g_LogProc)
+            g_LogProc(g_PluginNr, MSGTYPE_IMPORTANTERROR,
+                      "Error: restic ls failed. Check repository and snapshot.");
         free(output);
         return NULL;
     }
 
-    numLsEntries = ParseLsOutput(output, lsSubpath, &lsEntries);
+    /* Pass UTF-8 parentPath so it matches raw UTF-8 paths from restic JSON */
+    numLsEntries = ParseLsOutput(output, lsSubpathUtf8, &lsEntries);
     free(output);
 
     if (numLsEntries <= 0) {
@@ -393,6 +533,27 @@ static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath
 
     free(lsEntries);
     *outCount = count;
+
+    /* Store in directory listing cache */
+    if (entries && count > 0) {
+        LsCacheEntry* lce;
+        if (g_LsCacheCount >= LS_CACHE_MAX) {
+            /* Evict oldest entry (index 0) */
+            free(g_LsCache[0].entries);
+            memmove(&g_LsCache[0], &g_LsCache[1],
+                    sizeof(LsCacheEntry) * (LS_CACHE_MAX - 1));
+            g_LsCacheCount--;
+        }
+        lce = &g_LsCache[g_LsCacheCount];
+        strncpy(lce->shortId, shortId, sizeof(lce->shortId) - 1);
+        lce->shortId[sizeof(lce->shortId) - 1] = '\0';
+        strncpy(lce->path, lsSubpathUtf8, MAX_PATH - 1);
+        lce->path[MAX_PATH - 1] = '\0';
+        lce->entries = CopyDirEntries(entries, count);
+        lce->count = count;
+        if (lce->entries) g_LsCacheCount++;
+    }
+
     return entries;
 }
 
@@ -574,6 +735,13 @@ static BOOL ResolveRemotePath(const char* remoteName, ResolvedPath* out) {
         return FALSE;
 
     BuildLsSubpath(originalPath, rest, out->resticPath, MAX_PATH);
+
+    /* Convert ANSI path to UTF-8 for restic command */
+    char utf8Path[MAX_PATH];
+    AnsiToUtf8(out->resticPath, utf8Path, MAX_PATH);
+    strncpy(out->resticPath, utf8Path, MAX_PATH - 1);
+    out->resticPath[MAX_PATH - 1] = '\0';
+
     return TRUE;
 }
 
@@ -705,4 +873,61 @@ int __stdcall FsExecuteFile(HWND MainWin, char* RemoteName, char* Verb) {
     }
 
     return FS_EXEC_OK;
+}
+
+/* --- FsDisconnect: cleanup on plugin disconnect --- */
+
+/* Delete all files in %TEMP%\restic_wfx\ and remove the directory. */
+static void DeleteTempDir(void) {
+    char tempDir[MAX_PATH];
+    char searchPath[MAX_PATH];
+    char filePath[MAX_PATH];
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind;
+
+    GetTempPathA(MAX_PATH, tempDir);
+    PathAppendA(tempDir, "restic_wfx");
+
+    snprintf(searchPath, MAX_PATH, "%s\\*", tempDir);
+    hFind = FindFirstFileA(searchPath, &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return;
+
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
+            continue;
+        snprintf(filePath, MAX_PATH, "%s\\%s", tempDir, fd.cFileName);
+        DeleteFileA(filePath);
+    } while (FindNextFileA(hFind, &fd));
+
+    FindClose(hFind);
+    RemoveDirectoryA(tempDir);
+}
+
+int __stdcall FsDisconnect(char* DisconnectRoot) {
+    int i;
+
+    /* Free snapshot cache */
+    for (i = 0; i < g_SnapCacheCount; i++) {
+        free(g_SnapCache[i].snapshots);
+        g_SnapCache[i].snapshots = NULL;
+    }
+    g_SnapCacheCount = 0;
+
+    /* Free directory listing cache */
+    for (i = 0; i < g_LsCacheCount; i++) {
+        free(g_LsCache[i].entries);
+        g_LsCache[i].entries = NULL;
+    }
+    g_LsCacheCount = 0;
+
+    /* Zero all passwords */
+    for (i = 0; i < g_RepoStore.count; i++) {
+        SecureZeroMemory(g_RepoStore.repos[i].password, MAX_REPO_PASS);
+        g_RepoStore.repos[i].hasPassword = FALSE;
+    }
+
+    /* Delete temp files */
+    DeleteTempDir();
+
+    return 0;
 }

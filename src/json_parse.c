@@ -22,6 +22,24 @@ void Utf8ToAnsi(const char* utf8, char* ansi, int ansiSize) {
     ansi[ansiSize - 1] = '\0';
 }
 
+/* Convert system ANSI codepage string to UTF-8.
+   Inverse of Utf8ToAnsi: needed when passing paths back to restic. */
+void AnsiToUtf8(const char* ansi, char* utf8, int utf8Size) {
+    int wlen = MultiByteToWideChar(CP_ACP, 0, ansi, -1, NULL, 0);
+    if (wlen > 0) {
+        WCHAR* wbuf = (WCHAR*)malloc(wlen * sizeof(WCHAR));
+        if (wbuf) {
+            MultiByteToWideChar(CP_ACP, 0, ansi, -1, wbuf, wlen);
+            WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, utf8, utf8Size, NULL, NULL);
+            free(wbuf);
+            return;
+        }
+    }
+    /* Fallback: copy as-is */
+    strncpy(utf8, ansi, utf8Size - 1);
+    utf8[utf8Size - 1] = '\0';
+}
+
 /* Compare snapshots by time descending (newest first) */
 static int CompareSnapshotsDesc(const void* a, const void* b) {
     return strcmp(((const ResticSnapshot*)b)->time,

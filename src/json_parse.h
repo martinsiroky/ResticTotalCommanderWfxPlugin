@@ -28,6 +28,9 @@ FILETIME ParseISOTime(const char* timeStr);
 /* Convert UTF-8 string to the system ANSI codepage. */
 void Utf8ToAnsi(const char* utf8, char* ansi, int ansiSize);
 
+/* Convert system ANSI codepage string to UTF-8. */
+void AnsiToUtf8(const char* ansi, char* utf8, int utf8Size);
+
 /* A single entry from `restic ls --json` output */
 typedef struct {
     char name[MAX_PATH];      /* file/folder name (last path component) */
