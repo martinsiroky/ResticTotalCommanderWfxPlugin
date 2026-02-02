@@ -14,6 +14,17 @@
 char* RunRestic(const char* repoPath, const char* password,
                 const char* args, DWORD* exitCode);
 
+/* Cancellation check callback for RunResticWithProgress.
+   Return TRUE to continue, FALSE to abort. */
+typedef BOOL (*ResticCancelFunc)(void* userData);
+
+/* Same as RunRestic, but periodically calls cancelCb during the read loop.
+   If cancelCb returns FALSE, the process is terminated and NULL is returned.
+   cancelCb may be NULL (behaves identically to RunRestic). */
+char* RunResticWithProgress(const char* repoPath, const char* password,
+                            const char* args, DWORD* exitCode,
+                            ResticCancelFunc cancelCb, void* userData);
+
 /* Progress callback for RunResticDump.
    bytesWritten: total bytes written so far
    totalSize:    expected total size (0 if unknown)

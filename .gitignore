@@ -1,15 +1,4 @@
-/include/descript.ion
 descript.ion
-/.idea/.name
-/.idea/copilot.data.migration.agent.xml
-/.idea/copilot.data.migration.ask.xml
-/.idea/copilot.data.migration.ask2agent.xml
-/.idea/copilot.data.migration.edit.xml
-/.idea/editor.xml
-/.idea/misc.xml
-/.idea/modules.xml
-/.idea/Total Commander Restric Plugin.iml
-/.idea/vcs.xml
-/.idea/workspace.xml
-/.claude/descript.ion
-/.claude/settings.local.json
+/.idea
+/.claude
+/build

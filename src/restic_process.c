@@ -14,8 +14,9 @@ static WCHAR* Utf8ToWide(const char* utf8) {
     return wbuf;
 }
 
-char* RunRestic(const char* repoPath, const char* password,
-                const char* args, DWORD* exitCode) {
+char* RunResticWithProgress(const char* repoPath, const char* password,
+                            const char* args, DWORD* exitCode,
+                            ResticCancelFunc cancelCb, void* userData) {
     SECURITY_ATTRIBUTES sa;
     HANDLE hReadPipe = NULL, hWritePipe = NULL;
     STARTUPINFOW si;
@@ -130,6 +131,19 @@ char* RunRestic(const char* repoPath, const char* password,
     while (ReadFile(hReadPipe, buffer + totalRead, bufSize - totalRead - 1, &bytesRead, NULL)
            && bytesRead > 0) {
         totalRead += bytesRead;
+
+        /* Check cancellation callback after each read chunk */
+        if (cancelCb && !cancelCb(userData)) {
+            free(buffer);
+            CloseHandle(hReadPipe);
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 5000);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            if (exitCode) *exitCode = (DWORD)-1;
+            return NULL;
+        }
+
         if (totalRead + 1 >= bufSize) {
             bufSize *= 2;
             char* newBuf = (char*)realloc(buffer, bufSize);
@@ -159,6 +173,11 @@ char* RunRestic(const char* repoPath, const char* password,
     CloseHandle(pi.hThread);
 
     return buffer;
+}
+
+char* RunRestic(const char* repoPath, const char* password,
+                const char* args, DWORD* exitCode) {
+    return RunResticWithProgress(repoPath, password, args, exitCode, NULL, NULL);
 }
 
 BOOL RunResticDump(const char* repoPath, const char* password,

@@ -120,11 +120,12 @@ TC passes ANSI paths → plugin stores ANSI internally → converts to UTF-8 for
 
 Key functions: `Utf8ToAnsi()`, `AnsiToUtf8()`, `Utf8ToWide()` (in restic_process.c).
 
-## Next: Phase 4 Remaining
+## Implemented: Phase 4 Remaining
 
-- [ ] Progress callbacks for long `restic ls` operations
-- [ ] FsSetCryptCallback() for TC password manager integration
-- [ ] Repository statistics virtual file
+- [x] Progress callbacks for long `restic ls` and `snapshots` operations
+  - `RunResticWithProgress()` with `ResticCancelFunc` cancellation callback
+  - `LsCancelCallback` bridges to TC's `g_ProgressProc` (indeterminate progress, supports Escape to cancel)
+  - Used in `GetSnapshotContents` and `FetchSnapshots`
 
 ## Limits
 

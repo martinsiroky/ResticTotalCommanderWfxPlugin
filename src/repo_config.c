@@ -161,6 +161,7 @@ BOOL RepoStore_EnsurePassword(RepoConfig* repo, int pluginNr, tRequestProc reque
 
     if (!repo || !requestProc) return FALSE;
 
+    /* Already have password in memory */
     if (repo->hasPassword && repo->password[0] != '\0') {
         return TRUE;
     }
