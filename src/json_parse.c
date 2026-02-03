@@ -164,6 +164,70 @@ static BOOL IsDirectChild(const char* entryPath, const char* parentDir, int pare
     return (strchr(child, '/') == NULL);
 }
 
+int ParseFindOutput(const char* json, ResticFindEntry** outEntries) {
+    ResticFindEntry* entries = NULL;
+    int count = 0, capacity = 0;
+    cJSON* root = NULL;
+    cJSON* snapItem = NULL;
+
+    if (!json || !outEntries) return -1;
+    *outEntries = NULL;
+
+    root = cJSON_Parse(json);
+    if (!root || !cJSON_IsArray(root)) {
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    cJSON_ArrayForEach(snapItem, root) {
+        const char* snapshotId = GetJsonString(snapItem, "snapshot");
+        const cJSON* matches = cJSON_GetObjectItemCaseSensitive(snapItem, "matches");
+
+        if (!cJSON_IsArray(matches)) continue;
+
+        cJSON* match;
+        cJSON_ArrayForEach(match, matches) {
+            if (count >= capacity) {
+                capacity = (capacity == 0) ? 16 : (capacity * 2);
+                entries = (ResticFindEntry*)realloc(entries, sizeof(ResticFindEntry) * capacity);
+                if (!entries) { cJSON_Delete(root); return -1; }
+            }
+
+            ResticFindEntry* e = &entries[count];
+            memset(e, 0, sizeof(ResticFindEntry));
+
+            strncpy(e->snapshotId, snapshotId, sizeof(e->snapshotId) - 1);
+            /* shortId = first 8 chars */
+            strncpy(e->shortId, snapshotId, 8);
+            e->shortId[8] = '\0';
+
+            const char* path = GetJsonString(match, "path");
+            Utf8ToAnsi(path, e->path, MAX_PATH);
+
+            const char* type = GetJsonString(match, "type");
+            strncpy(e->type, type, sizeof(e->type) - 1);
+
+            const cJSON* sizeItem = cJSON_GetObjectItemCaseSensitive(match, "size");
+            if (cJSON_IsNumber(sizeItem)) {
+                unsigned long long sz = (unsigned long long)sizeItem->valuedouble;
+                e->sizeLow = (DWORD)(sz & 0xFFFFFFFF);
+                e->sizeHigh = (DWORD)(sz >> 32);
+            }
+
+            const cJSON* mtimeItem = cJSON_GetObjectItemCaseSensitive(match, "mtime");
+            if (cJSON_IsString(mtimeItem)) {
+                strncpy(e->mtime, mtimeItem->valuestring, sizeof(e->mtime) - 1);
+            }
+
+            count++;
+        }
+    }
+
+    cJSON_Delete(root);
+    *outEntries = entries;
+    return count;
+}
+
 int ParseLsOutput(const char* ndjson, const char* parentPath, ResticLsEntry** outEntries) {
     ResticLsEntry* entries = NULL;
     int count = 0, capacity = 0;

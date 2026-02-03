@@ -8,6 +8,11 @@
 #include <shellapi.h>
 #include <shlwapi.h>
 
+/* [All Files] virtual snapshot constants */
+#define ALL_FILES_ENTRY    "[All Files]"
+#define VERSION_PREFIX     "[v] "
+#define VERSION_PREFIX_LEN 4
+
 /* Global plugin state */
 static int g_PluginNr = 0;
 static tProgressProc g_ProgressProc = NULL;
@@ -343,6 +348,13 @@ static DirEntry* GetSnapshotsForPath(RepoConfig* repo, const char* sanitizedPath
         return NULL;
     }
 
+    /* Insert [All Files] virtual entry at the top */
+    {
+        FILETIME ftNow;
+        GetSystemTimeAsFileTime(&ftNow);
+        AddEntry(&entries, &count, &capacity, ALL_FILES_ENTRY, TRUE, 0, 0, ftNow);
+    }
+
     for (i = 0; i < numSnaps; i++) {
         BOOL matches = FALSE;
 
@@ -420,6 +432,89 @@ static void BackslashToForwardSlash(char* path) {
     char* p;
     for (p = path; *p; p++) {
         if (*p == '\\') *p = '/';
+    }
+}
+
+/* Check if a segment is the [All Files] virtual entry. */
+static BOOL IsAllFilesPath(const char* seg) {
+    return (strcmp(seg, ALL_FILES_ENTRY) == 0);
+}
+
+/* Check if a name starts with the version prefix "[v] ". */
+static BOOL HasVersionPrefix(const char* name) {
+    return (strncmp(name, VERSION_PREFIX, VERSION_PREFIX_LEN) == 0);
+}
+
+/* Return the name without the "[v] " prefix, or the original name if no prefix. */
+static const char* StripVersionPrefix(const char* name) {
+    if (HasVersionPrefix(name)) return name + VERSION_PREFIX_LEN;
+    return name;
+}
+
+/* Find a path component starting with "[v] " in a rest string (backslash-separated).
+   Returns pointer to the "[v] " within rest, or NULL if not found. */
+static const char* FindVersionComponent(const char* rest) {
+    const char* p = rest;
+    if (!p || !*p) return NULL;
+
+    /* Check if rest itself starts with [v] */
+    if (HasVersionPrefix(p)) return p;
+
+    /* Scan for \[v] */
+    while ((p = strstr(p, "\\" VERSION_PREFIX)) != NULL) {
+        return p + 1; /* skip the backslash, return pointer to "[v] " */
+    }
+    return NULL;
+}
+
+/* Split rest at the [v] component.
+   rest = "subdir\[v] photo.jpg\2025-01-28 10-30-05 (fb4ed15b)"
+   → pathBefore="subdir", vFileName="photo.jpg", afterVersion="2025-01-28 10-30-05 (fb4ed15b)"
+
+   rest = "[v] photo.jpg\2025-01-28..."
+   → pathBefore="", vFileName="photo.jpg", afterVersion="2025-01-28..."
+
+   rest = "[v] photo.jpg"
+   → pathBefore="", vFileName="photo.jpg", afterVersion="" */
+static void SplitAtVersionComponent(const char* rest, char* pathBefore, char* vFileName, char* afterVersion) {
+    const char* vComp;
+    const char* afterPrefix;
+    const char* nextSep;
+
+    pathBefore[0] = '\0';
+    vFileName[0] = '\0';
+    afterVersion[0] = '\0';
+
+    vComp = FindVersionComponent(rest);
+    if (!vComp) return;
+
+    /* pathBefore = everything before the [v] component */
+    if (vComp > rest) {
+        /* There's a backslash before [v], so pathBefore = rest up to that backslash */
+        int len = (int)(vComp - rest - 1); /* -1 to skip the separating backslash */
+        if (len < 0) len = 0;
+        if (len >= MAX_PATH) len = MAX_PATH - 1;
+        memcpy(pathBefore, rest, len);
+        pathBefore[len] = '\0';
+    }
+
+    /* Skip "[v] " prefix to get filename */
+    afterPrefix = vComp + VERSION_PREFIX_LEN;
+
+    /* Find end of filename (next backslash or end of string) */
+    nextSep = strchr(afterPrefix, '\\');
+    if (nextSep) {
+        int len = (int)(nextSep - afterPrefix);
+        if (len >= MAX_PATH) len = MAX_PATH - 1;
+        memcpy(vFileName, afterPrefix, len);
+        vFileName[len] = '\0';
+
+        /* afterVersion = everything after the backslash */
+        strncpy(afterVersion, nextSep + 1, MAX_PATH - 1);
+        afterVersion[MAX_PATH - 1] = '\0';
+    } else {
+        strncpy(vFileName, afterPrefix, MAX_PATH - 1);
+        vFileName[MAX_PATH - 1] = '\0';
     }
 }
 
@@ -557,6 +652,164 @@ static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath
     return entries;
 }
 
+/* Merge directory contents from all snapshots matching a sanitized path.
+   Directories are listed as-is; files get a "[v] " prefix and isDirectory=TRUE
+   so the user can Enter them to see version listings. */
+static DirEntry* GetAllFilesContents(RepoConfig* repo, const char* sanitizedPath,
+                                      const char* subpath, int* outCount) {
+    DirEntry* entries = NULL;
+    int count = 0, capacity = 0;
+    ResticSnapshot* snapshots = NULL;
+    int numSnaps, i, j, k;
+
+    *outCount = 0;
+
+    numSnaps = FetchSnapshots(repo, &snapshots);
+    if (numSnaps == 0) return NULL;
+
+    for (i = 0; i < numSnaps; i++) {
+        BOOL matches = FALSE;
+
+        for (j = 0; j < snapshots[i].pathCount; j++) {
+            char sanitized[MAX_PATH];
+            SanitizePath(snapshots[i].paths[j], sanitized, MAX_PATH);
+            if (strcmp(sanitized, sanitizedPath) == 0) {
+                matches = TRUE;
+                break;
+            }
+        }
+
+        if (!matches) continue;
+
+        /* Build display name for this snapshot (needed by GetSnapshotContents) */
+        char displayName[MAX_PATH];
+        int yr = 0, mo = 0, dy = 0, hr = 0, mn = 0, sc = 0;
+        sscanf(snapshots[i].time, "%d-%d-%dT%d:%d:%d", &yr, &mo, &dy, &hr, &mn, &sc);
+        snprintf(displayName, sizeof(displayName), "%04d-%02d-%02d %02d-%02d-%02d (%s)",
+                 yr, mo, dy, hr, mn, sc, snapshots[i].shortId);
+
+        /* Get contents of this snapshot at the subpath */
+        int snapCount = 0;
+        DirEntry* snapEntries = GetSnapshotContents(repo, sanitizedPath, displayName, subpath, &snapCount);
+        if (!snapEntries || snapCount == 0) {
+            free(snapEntries);
+            continue;
+        }
+
+        /* Merge into result, deduplicating by name */
+        for (k = 0; k < snapCount; k++) {
+            BOOL duplicate = FALSE;
+            int m;
+            const char* baseName = snapEntries[k].name;
+
+            /* Check if already in merged result */
+            for (m = 0; m < count; m++) {
+                const char* existingBase = StripVersionPrefix(entries[m].name);
+                if (strcmp(existingBase, baseName) == 0) {
+                    duplicate = TRUE;
+                    break;
+                }
+            }
+
+            if (!duplicate) {
+                if (snapEntries[k].isDirectory) {
+                    /* Directories: add as-is */
+                    AddEntry(&entries, &count, &capacity,
+                             baseName, TRUE, 0, 0, snapEntries[k].lastWriteTime);
+                } else {
+                    /* Files: add with [v] prefix, mark as directory so TC allows Enter */
+                    char prefixedName[MAX_PATH];
+                    snprintf(prefixedName, MAX_PATH, "%s%s", VERSION_PREFIX, baseName);
+                    AddEntry(&entries, &count, &capacity,
+                             prefixedName, TRUE,
+                             snapEntries[k].fileSizeLow, snapEntries[k].fileSizeHigh,
+                             snapEntries[k].lastWriteTime);
+                }
+            }
+        }
+
+        free(snapEntries);
+    }
+
+    free(snapshots);
+    *outCount = count;
+    return entries;
+}
+
+/* List all versions of a specific file across snapshots.
+   Uses `restic find --json` to locate the file in all snapshots. */
+static DirEntry* GetFileVersions(RepoConfig* repo, const char* sanitizedPath,
+                                  const char* filePath, int* outCount) {
+    DirEntry* entries = NULL;
+    int count = 0, capacity = 0;
+    char originalPath[MAX_PATH];
+    char resticPath[MAX_PATH];
+    char resticPathUtf8[MAX_PATH];
+    char args[MAX_PATH * 3];
+    char* output;
+    DWORD exitCode;
+    ResticFindEntry* findEntries = NULL;
+    int numFound, i;
+
+    *outCount = 0;
+
+    if (!FindOriginalPath(repo, sanitizedPath, originalPath))
+        return NULL;
+
+    /* Build the full restic path for the file */
+    BuildLsSubpath(originalPath, filePath, resticPath, MAX_PATH);
+    AnsiToUtf8(resticPath, resticPathUtf8, MAX_PATH);
+
+    /* Build the --path filter using the original backup path (as stored in snapshot) */
+    char originalPathUtf8[MAX_PATH];
+    AnsiToUtf8(originalPath, originalPathUtf8, MAX_PATH);
+
+    /* Run restic find */
+    snprintf(args, sizeof(args), "find --json --path \"%s\" \"%s\"",
+             originalPathUtf8, resticPathUtf8);
+
+    output = RunRestic(repo->path, repo->password, args, &exitCode);
+
+    if (!output) return NULL;
+    if (exitCode != 0) {
+        free(output);
+        return NULL;
+    }
+
+    numFound = ParseFindOutput(output, &findEntries);
+    free(output);
+
+    if (numFound <= 0) {
+        free(findEntries);
+        return NULL;
+    }
+
+    for (i = 0; i < numFound; i++) {
+        char displayName[MAX_PATH];
+        int yr = 0, mo = 0, dy = 0, hr = 0, mn = 0, sc = 0;
+        FILETIME ft;
+
+        sscanf(findEntries[i].mtime, "%d-%d-%dT%d:%d:%d", &yr, &mo, &dy, &hr, &mn, &sc);
+
+        /* Extract original filename from the end of the path */
+        const char* origName = strrchr(findEntries[i].path, '/');
+        if (!origName) origName = strrchr(findEntries[i].path, '\\');
+        origName = origName ? origName + 1 : findEntries[i].path;
+
+        snprintf(displayName, sizeof(displayName), "%04d-%02d-%02d %02d-%02d-%02d (%s) %s",
+                 yr, mo, dy, hr, mn, sc, findEntries[i].shortId, origName);
+
+        ft = ParseISOTime(findEntries[i].mtime);
+        AddEntry(&entries, &count, &capacity,
+                 displayName, FALSE,
+                 findEntries[i].sizeLow, findEntries[i].sizeHigh, ft);
+    }
+
+    free(findEntries);
+    *outCount = count;
+    return entries;
+}
+
 /* Returns heap-allocated directory entries for the given path. */
 DirEntry* GetEntriesForPath(const char* path, int* outCount) {
     DirEntry* entries = NULL;
@@ -609,10 +862,32 @@ DirEntry* GetEntriesForPath(const char* path, int* outCount) {
         }
     }
     else if (numSegs == 3) {
-        /* Inside a snapshot: browse files/folders */
         RepoConfig* repo = RepoStore_FindByName(seg1);
         if (repo && RepoStore_EnsurePassword(repo, g_PluginNr, g_RequestProc)) {
-            entries = GetSnapshotContents(repo, seg2, seg3, rest, &count);
+            if (IsAllFilesPath(seg3)) {
+                const char* vComp = FindVersionComponent(rest);
+                if (vComp) {
+                    char pathBefore[MAX_PATH], vFileName[MAX_PATH], afterV[MAX_PATH];
+                    SplitAtVersionComponent(rest, pathBefore, vFileName, afterV);
+                    if (afterV[0] == '\0') {
+                        /* Entered [v] file → show version listing */
+                        char filePath[MAX_PATH];
+                        if (pathBefore[0])
+                            snprintf(filePath, MAX_PATH, "%s\\%s", pathBefore, vFileName);
+                        else
+                            strncpy(filePath, vFileName, MAX_PATH - 1);
+                        filePath[MAX_PATH - 1] = '\0';
+                        entries = GetFileVersions(repo, seg2, filePath, &count);
+                    }
+                    /* else: afterV is set = specific version file, TC shouldn't list it */
+                } else {
+                    /* Pure merged directory browsing */
+                    entries = GetAllFilesContents(repo, seg2, rest, &count);
+                }
+            } else {
+                /* Normal snapshot browsing */
+                entries = GetSnapshotContents(repo, seg2, seg3, rest, &count);
+            }
         }
     }
 
@@ -727,6 +1002,40 @@ static BOOL ResolveRemotePath(const char* remoteName, ResolvedPath* out) {
 
     if (!RepoStore_EnsurePassword(out->repo, g_PluginNr, g_RequestProc))
         return FALSE;
+
+    if (IsAllFilesPath(seg3)) {
+        /* [All Files] path: rest = "subdir\[v] photo.jpg\2025-01-28 10-30-05 (fb4ed15b)" */
+        char pathBefore[MAX_PATH], vFileName[MAX_PATH], afterV[MAX_PATH];
+        const char* vComp = FindVersionComponent(rest);
+        if (!vComp) return FALSE;
+
+        SplitAtVersionComponent(rest, pathBefore, vFileName, afterV);
+        if (afterV[0] == '\0') return FALSE;  /* no version selected */
+
+        /* afterV = "2025-01-28 10-30-05 (fb4ed15b)" → extract shortId */
+        if (!ExtractShortId(afterV, out->shortId, sizeof(out->shortId)))
+            return FALSE;
+
+        if (!FindOriginalPath(out->repo, seg2, originalPath))
+            return FALSE;
+
+        /* Build file subpath from pathBefore + vFileName */
+        char fileSubpath[MAX_PATH];
+        if (pathBefore[0])
+            snprintf(fileSubpath, MAX_PATH, "%s\\%s", pathBefore, vFileName);
+        else {
+            strncpy(fileSubpath, vFileName, MAX_PATH - 1);
+            fileSubpath[MAX_PATH - 1] = '\0';
+        }
+
+        BuildLsSubpath(originalPath, fileSubpath, out->resticPath, MAX_PATH);
+
+        char utf8Path[MAX_PATH];
+        AnsiToUtf8(out->resticPath, utf8Path, MAX_PATH);
+        strncpy(out->resticPath, utf8Path, MAX_PATH - 1);
+        out->resticPath[MAX_PATH - 1] = '\0';
+        return TRUE;
+    }
 
     if (!ExtractShortId(seg3, out->shortId, sizeof(out->shortId)))
         return FALSE;

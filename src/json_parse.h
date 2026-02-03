@@ -49,4 +49,21 @@ typedef struct {
    Returns the number of entries, or -1 on error. */
 int ParseLsOutput(const char* ndjson, const char* parentPath, ResticLsEntry** outEntries);
 
+/* A single entry from `restic find --json` output */
+typedef struct {
+    char snapshotId[65];   /* full snapshot ID */
+    char shortId[16];      /* first 8 chars */
+    char path[MAX_PATH];
+    char type[16];         /* "file", "dir" */
+    DWORD sizeLow;
+    DWORD sizeHigh;
+    char mtime[32];        /* ISO 8601 */
+} ResticFindEntry;
+
+/* Parse JSON array output from `restic find --json`.
+   json: the raw JSON string
+   outEntries: receives a malloc'd array of ResticFindEntry (caller must free)
+   Returns the number of entries, or -1 on error. */
+int ParseFindOutput(const char* json, ResticFindEntry** outEntries);
+
 #endif /* JSON_PARSE_H */

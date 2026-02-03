@@ -21,7 +21,7 @@ cJSON parser
 ```
 restic-wfx-plugin/
 ├── CMakeLists.txt              # CMake 3.15+, C11, output: restic_wfx.wfx64
-├── restic_wfx.def              # DLL exports: FsInit, FsFindFirst/Next/Close, FsGetDefRootName, FsGetFile, FsExecuteFile, FsDisconnect
+├── restic_wfx.def              # DLL exports: FsInit, FsFindFirst/Next/Close, FsGetDefRootName, FsGetFile, FsExecuteFile, FsDisconnect, FsSetCryptCallback
 ├── include/
 │   └── fsplugin.h              # TC WFX SDK header (v2.1)
 ├── src/
@@ -44,9 +44,13 @@ restic-wfx-plugin/
 ```
 \                                           → Level 0: list repositories + [Add Repository]
 \RepoName\                                  → Level 1: unique sanitized backup paths
-\RepoName\D_Fotky_Mix\                      → Level 2: snapshots matching that path (newest first)
+\RepoName\D_Fotky_Mix\                      → Level 2: [All Files] + snapshots (newest first)
 \RepoName\D_Fotky_Mix\2025-01-28 10-30-05 (fb4ed15b)\          → Level 3+: files & folders
 \RepoName\D_Fotky_Mix\2025-01-28 10-30-05 (fb4ed15b)\subdir\   → deeper subdirectories
+\RepoName\D_Fotky_Mix\[All Files]\                              → merged file/folder listing
+\RepoName\D_Fotky_Mix\[All Files]\subdir\                       → merged subdirectory (recursive)
+\RepoName\D_Fotky_Mix\[All Files]\[v] photo.jpg\                → version listing for photo.jpg
+\RepoName\D_Fotky_Mix\[All Files]\[v] photo.jpg\2025-01-28 10-30-05 (fb4ed15b)  → actual file
 ```
 
 ### Path Handling
@@ -63,6 +67,7 @@ restic-wfx-plugin/
 | `restic -r "<repo>" ls --json <shortId> "<path>"` | List files in snapshot directory | `GetSnapshotContents()` |
 | `restic -r "<repo>" dump <id> "<path>"` | Extract single file to stdout | `RunResticDump()` |
 | `restic -r "<repo>" snapshots` | Validate repo on add (no --json) | `RepoStore_PromptAdd()` |
+| `restic -r "<repo>" find --json --path "<path>" "<file>"` | Find all versions of a file | `GetFileVersions()` |
 
 Password passed via `RESTIC_PASSWORD` env var, cleared immediately after process spawn.
 
@@ -87,6 +92,7 @@ DirEntry        { name, isDirectory, fileSizeLow, fileSizeHigh, lastWriteTime }
 SearchContext   { path, index, count, *entries }
 ResticSnapshot  { id[65], shortId[16], time[32], hostname[128], paths[8][MAX_PATH], pathCount }
 ResticLsEntry   { name[MAX_PATH], path[MAX_PATH], type[16], sizeLow, sizeHigh, mtime[32] }
+ResticFindEntry { snapshotId[65], shortId[16], path[MAX_PATH], type[16], sizeLow, sizeHigh, mtime[32] }
 RepoConfig      { name[64], path[512], password[256], configured, hasPassword }
 RepoStore       { repos[16], count, configFilePath }
 ```
@@ -126,6 +132,29 @@ Key functions: `Utf8ToAnsi()`, `AnsiToUtf8()`, `Utf8ToWide()` (in restic_process
   - `RunResticWithProgress()` with `ResticCancelFunc` cancellation callback
   - `LsCancelCallback` bridges to TC's `g_ProgressProc` (indeterminate progress, supports Escape to cancel)
   - Used in `GetSnapshotContents` and `FetchSnapshots`
+
+## Implemented: Phase 5 — [All Files] Virtual Snapshot
+
+- [x] `[All Files]` virtual entry in snapshot listing (appears first)
+- [x] Merged directory view across all snapshots (deduplicates by name)
+- [x] `[v] ` prefix on files → entering shows version list
+- [x] Version listing via `restic find --json` (shows all snapshots containing the file)
+- [x] File operations (F5 copy, Enter open) work on version entries
+- [x] `ParseFindOutput()` parser for `restic find --json` output
+- [x] `ResolveRemotePath()` handles `[All Files]` path decomposition
+- [x] Recursive subdirectory navigation within merged view
+
+## Plan: Phase 6 — Restoring the whole folder
+
+- [ ] Implement folder restore via `FsGetFile()` on directories (now restoring directories restores all files one by one which is slow)
+
+## Plan: Phase 7 — Persistent caching of list of files in snapshot and folder
+
+- [ ] Cache in maybe sqlite. This will speed up browsing old snapshots with many files and folders, loading just the newly visited snapshots or folders.
+
+## Plan: Phase 8 — Remove selected file from all snapshots
+
+- [ ] Implement file deletion via `restic rewrite` (with user confirmation dialog)
 
 ## Limits
 
