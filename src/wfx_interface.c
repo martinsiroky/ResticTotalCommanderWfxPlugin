@@ -843,6 +843,17 @@ static DirEntry* GetFileVersions(RepoConfig* repo, const char* sanitizedPath,
         int yr = 0, mo = 0, dy = 0, hr = 0, mn = 0, sc = 0;
         FILETIME ft;
 
+        /* Skip if this mtime was already seen (same file version in multiple snapshots) */
+        int duplicate = 0;
+        int j;
+        for (j = 0; j < i; j++) {
+            if (strcmp(findEntries[i].mtime, findEntries[j].mtime) == 0) {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate) continue;
+
         sscanf(findEntries[i].mtime, "%d-%d-%dT%d:%d:%d", &yr, &mo, &dy, &hr, &mn, &sc);
 
         /* Extract original filename from the end of the path */
