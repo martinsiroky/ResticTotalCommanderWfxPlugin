@@ -52,4 +52,11 @@ BOOL RunResticRestore(const char* repoPath, const char* password,
                       const char* includePath,
                       const char* targetDir, DWORD* exitCode);
 
+/* Run "restic rewrite --exclude <excludePath> --path <snapshotPath> --forget".
+   Removes the specified file from all snapshots containing the given path.
+   Returns TRUE on success, FALSE on failure. */
+BOOL RunResticRewrite(const char* repoPath, const char* password,
+                      const char* snapshotPath, const char* excludePath,
+                      DWORD* exitCode);
+
 #endif /* RESTIC_PROCESS_H */

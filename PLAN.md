@@ -163,9 +163,9 @@ Key functions: `Utf8ToAnsi()`, `AnsiToUtf8()`, `Utf8ToWide()` (in restic_process
 - [x] Add option in Add Repository dialog to select password file (allow both password and password file)
 - [x] Path to password file stored in INI config so that user is not prompted every time
 
-## Plan: Phase 9 — Remove selected file from all snapshots
+## Implemented: Phase 9 — Remove selected file from all snapshots
 
-- [ ] Implement file deletion via `restic rewrite` (with user confirmation dialog)
+- [x] Implement file deletion via `restic rewrite` (with user confirmation dialog with exact command shown)
 
 ## Limits
 

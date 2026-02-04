@@ -1097,6 +1097,62 @@ static void BuildBatchTempFilePath(const char* tempDir, const char* resticPath,
         snprintf(outPath, maxLen, "%s\\%s", tempDir, converted);
 }
 
+/* --- Rewrite helper --- */
+
+/* Resolve a TC RemoteName into repo, original backup path, and restic file path
+   for the rewrite command. Works from snapshot files, [All Files] files, and version entries.
+   Does NOT require a specific snapshot ID (rewrite targets all snapshots). */
+static BOOL ResolveFileForRewrite(const char* remoteName,
+                                   RepoConfig** outRepo,
+                                   char* outOriginalPath,   /* e.g. "D:\Fotky\Mix" */
+                                   char* outResticFilePath)  /* e.g. "/D/Fotky/Mix/photo.jpg" */
+{
+    char seg1[MAX_PATH], seg2[MAX_PATH], seg3[MAX_PATH], rest[MAX_PATH];
+    int numSegs = ParsePathSegments(remoteName, seg1, seg2, seg3, rest);
+    if (numSegs < 3 || rest[0] == '\0') return FALSE;
+
+    *outRepo = RepoStore_FindByName(seg1);
+    if (!*outRepo) return FALSE;
+    if (!RepoStore_EnsurePassword(*outRepo, g_PluginNr, g_RequestProc)) return FALSE;
+
+    /* Get the original backup path from sanitized seg2 */
+    if (!FindOriginalPath(*outRepo, seg2, outOriginalPath)) return FALSE;
+
+    if (IsAllFilesPath(seg3)) {
+        /* [All Files] path: rest might be "subdir\file.txt" or "[v] file.txt\..." */
+        const char* vComp = FindVersionComponent(rest);
+        char fileSubpath[MAX_PATH];
+
+        if (vComp) {
+            /* Version entry: extract actual filename */
+            char pathBefore[MAX_PATH], vFileName[MAX_PATH], afterV[MAX_PATH];
+            SplitAtVersionComponent(rest, pathBefore, vFileName, afterV);
+            if (pathBefore[0])
+                snprintf(fileSubpath, MAX_PATH, "%s\\%s", pathBefore, vFileName);
+            else {
+                strncpy(fileSubpath, vFileName, MAX_PATH - 1);
+                fileSubpath[MAX_PATH - 1] = '\0';
+            }
+        } else {
+            /* Direct file in [All Files] */
+            strncpy(fileSubpath, rest, MAX_PATH - 1);
+            fileSubpath[MAX_PATH - 1] = '\0';
+        }
+
+        BuildLsSubpath(outOriginalPath, fileSubpath, outResticFilePath, MAX_PATH);
+    } else {
+        /* Snapshot path: seg3 = "2025-01-28 10-30-05 (fb4ed15b)", rest = "subdir\file.txt" */
+        BuildLsSubpath(outOriginalPath, rest, outResticFilePath, MAX_PATH);
+    }
+
+    /* Convert ANSI -> UTF-8 */
+    char utf8Path[MAX_PATH];
+    AnsiToUtf8(outResticFilePath, utf8Path, MAX_PATH);
+    strncpy(outResticFilePath, utf8Path, MAX_PATH - 1);
+    outResticFilePath[MAX_PATH - 1] = '\0';
+    return TRUE;
+}
+
 /* --- File operation helpers --- */
 
 /* Resolved components of a remote file path */
@@ -1347,6 +1403,56 @@ int __stdcall FsExecuteFile(HWND MainWin, char* RemoteName, char* Verb) {
     const char* fileName;
     DWORD exitCode;
     BOOL ok;
+
+    if (strcmp(Verb, "properties") == 0) {
+        /* Rewrite: remove file from all snapshots in this backup path */
+        char originalPath[MAX_PATH], resticFilePath[MAX_PATH];
+        RepoConfig* repo;
+
+        if (!ResolveFileForRewrite(RemoteName, &repo, originalPath, resticFilePath))
+            return FS_EXEC_YOURSELF;
+
+        /* Convert original path to restic format for --path flag */
+        char originalPathUtf8[MAX_PATH];
+        AnsiToUtf8(originalPath, originalPathUtf8, MAX_PATH);
+
+        /* Build the command string for display */
+        char cmdDisplay[2048];
+        snprintf(cmdDisplay, sizeof(cmdDisplay),
+                 "restic -r \"%s\" rewrite --exclude \"%s\" --path \"%s\" --forget",
+                 repo->path, resticFilePath, originalPathUtf8);
+
+        /* Show confirmation dialog with exact command */
+        char confirmMsg[2048];
+        snprintf(confirmMsg, sizeof(confirmMsg),
+                 "Remove this file from ALL snapshots?\n\nCommand:\n%s", cmdDisplay);
+
+        char buf[MAX_PATH] = {0};
+        if (!g_RequestProc(g_PluginNr, RT_MsgYesNo,
+                           "Confirm Rewrite", confirmMsg, buf, MAX_PATH))
+            return FS_EXEC_OK;  /* User cancelled */
+
+        /* Execute rewrite */
+        DWORD rwExitCode;
+        BOOL rwOk = RunResticRewrite(repo->path, repo->password,
+                                      originalPathUtf8, resticFilePath, &rwExitCode);
+
+        if (!rwOk || rwExitCode != 0) {
+            g_RequestProc(g_PluginNr, RT_MsgOK, "Rewrite Failed",
+                          "restic rewrite command failed. Check the repository.",
+                          buf, MAX_PATH);
+            return FS_EXEC_ERROR;
+        }
+
+        /* Invalidate caches since snapshot data changed */
+        InvalidateSnapshotCache(repo->name);
+        LsCache_DeleteRepo(repo->name);
+
+        g_RequestProc(g_PluginNr, RT_MsgOK, "Rewrite Complete",
+                      "File removed from snapshots. Run 'restic prune' to reclaim space.",
+                      buf, MAX_PATH);
+        return FS_EXEC_OK;
+    }
 
     /* Only handle "open" verb */
     if (strcmp(Verb, "open") != 0)

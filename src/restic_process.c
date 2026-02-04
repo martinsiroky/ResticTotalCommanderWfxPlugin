@@ -428,3 +428,100 @@ BOOL RunResticRestore(const char* repoPath, const char* password,
 
     return (exitCode && *exitCode == 0) ? TRUE : (exitCode ? FALSE : TRUE);
 }
+
+BOOL RunResticRewrite(const char* repoPath, const char* password,
+                      const char* snapshotPath, const char* excludePath,
+                      DWORD* exitCode) {
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    char cmdLine[2048];
+    WCHAR* wCmdLine = NULL;
+    BOOL ok;
+
+    if (exitCode) *exitCode = (DWORD)-1;
+
+    /* Convert ANSI repo path to UTF-8 */
+    char repoPathUtf8[MAX_PATH];
+    {
+        int wlen = MultiByteToWideChar(CP_ACP, 0, repoPath, -1, NULL, 0);
+        if (wlen > 0) {
+            WCHAR* wbuf = (WCHAR*)malloc(wlen * sizeof(WCHAR));
+            if (wbuf) {
+                MultiByteToWideChar(CP_ACP, 0, repoPath, -1, wbuf, wlen);
+                WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, repoPathUtf8, MAX_PATH, NULL, NULL);
+                free(wbuf);
+            } else {
+                strncpy(repoPathUtf8, repoPath, MAX_PATH - 1);
+                repoPathUtf8[MAX_PATH - 1] = '\0';
+            }
+        } else {
+            strncpy(repoPathUtf8, repoPath, MAX_PATH - 1);
+            repoPathUtf8[MAX_PATH - 1] = '\0';
+        }
+    }
+
+    /* Build command line */
+    snprintf(cmdLine, sizeof(cmdLine),
+             "restic -r \"%s\" rewrite --exclude \"%s\" --path \"%s\" --forget",
+             repoPathUtf8, excludePath, snapshotPath);
+
+    /* DEBUG: log the command line to temp file */
+    {
+        char debugPath[MAX_PATH];
+        GetTempPathA(MAX_PATH, debugPath);
+        strcat(debugPath, "restic_wfx_debug.log");
+        FILE* dbg = fopen(debugPath, "a");
+        if (dbg) {
+            fprintf(dbg, "REWRITE CMD: %s\n", cmdLine);
+            fclose(dbg);
+        }
+    }
+
+    /* Set RESTIC_PASSWORD environment variable */
+    SetEnvironmentVariableA("RESTIC_PASSWORD", password);
+
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+
+    memset(&pi, 0, sizeof(pi));
+
+    wCmdLine = Utf8ToWide(cmdLine);
+    if (!wCmdLine) {
+        SetEnvironmentVariableA("RESTIC_PASSWORD", NULL);
+        return FALSE;
+    }
+
+    ok = CreateProcessW(NULL, wCmdLine, NULL, NULL, FALSE,
+                        CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+
+    free(wCmdLine);
+    SetEnvironmentVariableA("RESTIC_PASSWORD", NULL);
+
+    if (!ok) return FALSE;
+
+    /* Wait for rewrite to finish (10 min timeout) */
+    WaitForSingleObject(pi.hProcess, 600000);
+
+    if (exitCode) {
+        GetExitCodeProcess(pi.hProcess, exitCode);
+    }
+
+    /* DEBUG: log exit code */
+    {
+        char debugPath[MAX_PATH];
+        GetTempPathA(MAX_PATH, debugPath);
+        strcat(debugPath, "restic_wfx_debug.log");
+        FILE* dbg = fopen(debugPath, "a");
+        if (dbg) {
+            fprintf(dbg, "REWRITE EXIT: %lu\n", exitCode ? *exitCode : 0xFFFFFFFF);
+            fclose(dbg);
+        }
+    }
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    return (exitCode && *exitCode == 0) ? TRUE : (exitCode ? FALSE : TRUE);
+}
