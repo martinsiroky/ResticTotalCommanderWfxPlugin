@@ -144,9 +144,15 @@ Key functions: `Utf8ToAnsi()`, `AnsiToUtf8()`, `Utf8ToWide()` (in restic_process
 - [x] `ResolveRemotePath()` handles `[All Files]` path decomposition
 - [x] Recursive subdirectory navigation within merged view
 
-## Plan: Phase 6 — Restoring the whole folder
+## Implemented: Phase 6 — Fast Folder Restore via `restic restore`
 
-- [ ] Implement folder restore via `FsGetFile()` on directories (now restoring directories restores all files one by one which is slow)
+- [x] `FsStatusInfo()` intercepts `FS_STATUS_OP_GET_MULTI` start/end
+- [x] On start: runs `restic restore <shortId> --include "<path>" --target "<tempDir>"` to pre-extract entire subtree
+- [x] `FsGetFile()` checks `g_BatchRestore` first, serves files from local temp copy via `CopyFileA`
+- [x] Falls back to per-file `restic dump` if batch restore failed or file missing
+- [x] `[All Files]` paths skip batch restore (files from different snapshots)
+- [x] `RunResticRestore()` in `restic_process.c` for running the restore command
+- [x] `DeleteDirectoryRecursive()` for temp dir cleanup on `FS_STATUS_END` and `FsDisconnect`
 
 ## Plan: Phase 7 — Persistent caching of list of files in snapshot and folder
 

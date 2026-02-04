@@ -8,3 +8,4 @@ EXPORTS
     FsGetFile
     FsExecuteFile
     FsDisconnect
+    FsStatusInfo

@@ -19,6 +19,19 @@ static tProgressProc g_ProgressProc = NULL;
 static tLogProc g_LogProc = NULL;
 static tRequestProc g_RequestProc = NULL;
 
+/* --- Batch restore state for FsStatusInfo/FsGetFile optimization --- */
+
+static struct {
+    BOOL active;                  /* TRUE after restore completed successfully */
+    BOOL pending;                 /* TRUE after FsStatusInfo(START), waiting for first FsGetFile */
+    char tempDir[MAX_PATH];       /* temp root where restic restored to */
+    char resticPrefix[MAX_PATH];  /* restic internal path prefix, e.g. "/D/Fotky/Mix" */
+    char repoPath[512];
+    char password[256];
+    char snapshotPath[MAX_PATH];  /* original path for --path flag (UTF-8) */
+    char shortId[16];
+} g_BatchRestore = {0};
+
 /* --- Snapshot list cache (TTL-based, per repo) --- */
 
 #define SNAPSHOT_CACHE_TTL_MS 300000  /* 5 minutes */
@@ -978,6 +991,57 @@ void __stdcall FsGetDefRootName(char* DefRootName, int maxlen) {
     DefRootName[maxlen - 1] = '\0';
 }
 
+/* --- Batch restore helpers --- */
+
+/* Recursively delete a directory and all its contents. */
+static void DeleteDirectoryRecursive(const char* dirPath) {
+    char searchPath[MAX_PATH];
+    char filePath[MAX_PATH];
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind;
+
+    snprintf(searchPath, MAX_PATH, "%s\\*", dirPath);
+    hFind = FindFirstFileA(searchPath, &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return;
+
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
+            continue;
+        snprintf(filePath, MAX_PATH, "%s\\%s", dirPath, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            DeleteDirectoryRecursive(filePath);
+        } else {
+            DeleteFileA(filePath);
+        }
+    } while (FindNextFileA(hFind, &fd));
+
+    FindClose(hFind);
+    RemoveDirectoryA(dirPath);
+}
+
+/* Build a local temp file path from the batch restore temp dir and a restic path.
+   resticPath is like "/D/Fotky/Mix/subdir/file.jpg"
+   Result: tempDir + resticPath with / → \ */
+static void BuildBatchTempFilePath(const char* tempDir, const char* resticPath,
+                                    char* outPath, int maxLen) {
+    char converted[MAX_PATH];
+    int i;
+
+    strncpy(converted, resticPath, MAX_PATH - 1);
+    converted[MAX_PATH - 1] = '\0';
+
+    /* Convert forward slashes to backslashes */
+    for (i = 0; converted[i]; i++) {
+        if (converted[i] == '/') converted[i] = '\\';
+    }
+
+    /* Remove leading backslash if present */
+    if (converted[0] == '\\')
+        snprintf(outPath, maxLen, "%s%s", tempDir, converted);
+    else
+        snprintf(outPath, maxLen, "%s\\%s", tempDir, converted);
+}
+
 /* --- File operation helpers --- */
 
 /* Resolved components of a remote file path */
@@ -1107,6 +1171,89 @@ int __stdcall FsGetFile(char* RemoteName, char* LocalName, int CopyFlags,
     if (g_ProgressProc(g_PluginNr, RemoteName, LocalName, 0))
         return FS_FILE_USERABORT;
 
+    /* Deferred batch restore: on first FsGetFile, derive the --include path
+       from the actual file path and run restic restore now */
+    if (g_BatchRestore.pending && !g_BatchRestore.active) {
+        DWORD batchExitCode;
+        /* Build include path: take the first subdirectory after the prefix.
+           prefix = "/d/Martin/Mapy", resticPath = "/d/Martin/Mapy/Gpx/file.gpx"
+           → includePath = "/d/Martin/Mapy/Gpx" */
+        char includePath[MAX_PATH];
+        size_t prefixLen = strlen(g_BatchRestore.resticPrefix);
+        const char* afterPrefix = resolved.resticPath + prefixLen;
+
+        /* Skip leading '/' after prefix */
+        if (*afterPrefix == '/') afterPrefix++;
+
+        /* Find the next '/' — that ends the subfolder name */
+        {
+            const char* nextSlash = strchr(afterPrefix, '/');
+            if (nextSlash) {
+                size_t includeLen = nextSlash - resolved.resticPath;
+                if (includeLen >= MAX_PATH) includeLen = MAX_PATH - 1;
+                memcpy(includePath, resolved.resticPath, includeLen);
+                includePath[includeLen] = '\0';
+            } else {
+                /* File is directly in the prefix dir — use the full file path */
+                strncpy(includePath, resolved.resticPath, MAX_PATH - 1);
+                includePath[MAX_PATH - 1] = '\0';
+            }
+        }
+
+        g_BatchRestore.pending = FALSE;
+
+        {
+            BOOL restoreOk = RunResticRestore(g_BatchRestore.repoPath,
+                                 g_BatchRestore.password,
+                                 g_BatchRestore.shortId, g_BatchRestore.snapshotPath,
+                                 includePath, g_BatchRestore.tempDir,
+                                 &batchExitCode);
+
+            /* DEBUG: log restore result */
+            {
+                char debugPath[MAX_PATH];
+                GetTempPathA(MAX_PATH, debugPath);
+                strcat(debugPath, "restic_wfx_debug.log");
+                FILE* dbg = fopen(debugPath, "a");
+                if (dbg) {
+                    fprintf(dbg, "DEFERRED: restoreOk=%d exitCode=%lu include=[%s] target=[%s]\n",
+                            restoreOk, batchExitCode, includePath, g_BatchRestore.tempDir);
+                    fclose(dbg);
+                }
+            }
+
+            if (restoreOk && batchExitCode == 0) {
+                g_BatchRestore.active = TRUE;
+            }
+        }
+        /* On failure, active stays FALSE → per-file dump fallback */
+    }
+
+    /* Check if batch restore has this file pre-extracted.
+       Use wide APIs because restic creates Unicode filenames and
+       the temp path is built from UTF-8 resticPath. */
+    if (g_BatchRestore.active) {
+        char tempFileUtf8[MAX_PATH];
+        WCHAR wTempFile[MAX_PATH];
+        WCHAR wLocalName[MAX_PATH];
+
+        BuildBatchTempFilePath(g_BatchRestore.tempDir, resolved.resticPath,
+                               tempFileUtf8, MAX_PATH);
+
+        /* Convert UTF-8 temp path to wide */
+        MultiByteToWideChar(CP_UTF8, 0, tempFileUtf8, -1, wTempFile, MAX_PATH);
+        /* Convert ANSI local path to wide */
+        MultiByteToWideChar(CP_ACP, 0, LocalName, -1, wLocalName, MAX_PATH);
+
+        if (GetFileAttributesW(wTempFile) != INVALID_FILE_ATTRIBUTES) {
+            if (CopyFileW(wTempFile, wLocalName, FALSE)) {
+                g_ProgressProc(g_PluginNr, RemoteName, LocalName, 100);
+                return FS_FILE_OK;
+            }
+        }
+        /* Fall through to per-file dump if temp file missing */
+    }
+
     /* Get total size for progress reporting */
     if (ri) {
         totalSize = ((LONGLONG)ri->SizeHigh << 32) | ri->SizeLow;
@@ -1215,6 +1362,12 @@ static void DeleteTempDir(void) {
 int __stdcall FsDisconnect(char* DisconnectRoot) {
     int i;
 
+    /* Clean up any active batch restore */
+    if (g_BatchRestore.active) {
+        DeleteDirectoryRecursive(g_BatchRestore.tempDir);
+        memset(&g_BatchRestore, 0, sizeof(g_BatchRestore));
+    }
+
     /* Free snapshot cache */
     for (i = 0; i < g_SnapCacheCount; i++) {
         free(g_SnapCache[i].snapshots);
@@ -1239,4 +1392,85 @@ int __stdcall FsDisconnect(char* DisconnectRoot) {
     DeleteTempDir();
 
     return 0;
+}
+
+/* --- FsStatusInfo: batch restore optimization for multi-file copy --- */
+
+void __stdcall FsStatusInfo(char* RemoteName, int InfoStartEnd, int InfoOperation) {
+    if (InfoOperation == FS_STATUS_OP_GET_MULTI ||
+        InfoOperation == FS_STATUS_OP_GET_MULTI_THREAD) {
+
+        if (InfoStartEnd == FS_STATUS_START) {
+            char seg1[MAX_PATH], seg2[MAX_PATH], seg3[MAX_PATH], rest[MAX_PATH];
+            char originalPath[MAX_PATH];
+            char resticPrefix[MAX_PATH];
+            char resticPrefixUtf8[MAX_PATH];
+            char tempDir[MAX_PATH];
+            char restoreSub[MAX_PATH];
+            char originalPathUtf8[MAX_PATH];
+            int numSegs;
+            RepoConfig* repo;
+            char shortId[16];
+
+            numSegs = ParsePathSegments(RemoteName, seg1, seg2, seg3, rest);
+            if (numSegs < 3) return;
+
+            /* Skip [All Files] paths — files come from different snapshots */
+            if (IsAllFilesPath(seg3)) return;
+
+            repo = RepoStore_FindByName(seg1);
+            if (!repo) return;
+            if (!RepoStore_EnsurePassword(repo, g_PluginNr, g_RequestProc)) return;
+
+            if (!ExtractShortId(seg3, shortId, sizeof(shortId))) return;
+            if (!FindOriginalPath(repo, seg2, originalPath)) return;
+
+            /* Strip trailing backslash from rest (TC passes "Mapy\" not "Mapy") */
+            {
+                size_t rlen = strlen(rest);
+                if (rlen > 0 && rest[rlen - 1] == '\\')
+                    rest[rlen - 1] = '\0';
+            }
+
+            /* Build the restic internal path prefix for the current directory */
+            BuildLsSubpath(originalPath, rest, resticPrefix, MAX_PATH);
+            AnsiToUtf8(resticPrefix, resticPrefixUtf8, MAX_PATH);
+            AnsiToUtf8(originalPath, originalPathUtf8, MAX_PATH);
+
+            /* Create temp directory: %TEMP%\restic_wfx\restore_XXXXXXXX */
+            GetTempPathA(MAX_PATH, tempDir);
+            PathAppendA(tempDir, "restic_wfx");
+            CreateDirectoryA(tempDir, NULL);
+
+            snprintf(restoreSub, MAX_PATH, "%s\\restore_%s_%u",
+                     tempDir, shortId, (unsigned)GetTickCount());
+            CreateDirectoryA(restoreSub, NULL);
+
+            /* Defer actual restore to first FsGetFile — we don't know
+               the selected subfolder yet (TC only gives us the parent dir).
+               Store everything needed so FsGetFile can run the restore. */
+            g_BatchRestore.pending = TRUE;
+            g_BatchRestore.active = FALSE;
+            strncpy(g_BatchRestore.tempDir, restoreSub, MAX_PATH - 1);
+            g_BatchRestore.tempDir[MAX_PATH - 1] = '\0';
+            strncpy(g_BatchRestore.resticPrefix, resticPrefixUtf8, MAX_PATH - 1);
+            g_BatchRestore.resticPrefix[MAX_PATH - 1] = '\0';
+            strncpy(g_BatchRestore.repoPath, repo->path, sizeof(g_BatchRestore.repoPath) - 1);
+            g_BatchRestore.repoPath[sizeof(g_BatchRestore.repoPath) - 1] = '\0';
+            strncpy(g_BatchRestore.password, repo->password, sizeof(g_BatchRestore.password) - 1);
+            g_BatchRestore.password[sizeof(g_BatchRestore.password) - 1] = '\0';
+            strncpy(g_BatchRestore.snapshotPath, originalPathUtf8, MAX_PATH - 1);
+            g_BatchRestore.snapshotPath[MAX_PATH - 1] = '\0';
+            strncpy(g_BatchRestore.shortId, shortId, sizeof(g_BatchRestore.shortId) - 1);
+            g_BatchRestore.shortId[sizeof(g_BatchRestore.shortId) - 1] = '\0';
+        }
+        else if (InfoStartEnd == FS_STATUS_END) {
+            if (g_BatchRestore.active || g_BatchRestore.pending) {
+                if (g_BatchRestore.tempDir[0])
+                    DeleteDirectoryRecursive(g_BatchRestore.tempDir);
+                SecureZeroMemory(g_BatchRestore.password, sizeof(g_BatchRestore.password));
+                memset(&g_BatchRestore, 0, sizeof(g_BatchRestore));
+            }
+        }
+    }
 }

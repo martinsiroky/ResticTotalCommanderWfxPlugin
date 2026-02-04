@@ -43,4 +43,13 @@ BOOL RunResticDump(const char* repoPath, const char* password,
                    DumpProgressFunc progressCb, void* userData,
                    DWORD* exitCode);
 
+/* Run "restic restore <snapshotId> --path <snapshotPath> --include <includePath> --target <targetDir>".
+   snapshotPath: the top-level path within the snapshot (UTF-8, Windows format e.g. "D:\Martin").
+   Only captures exit code, not stdout.
+   Returns TRUE on success, FALSE on failure. */
+BOOL RunResticRestore(const char* repoPath, const char* password,
+                      const char* snapshotId, const char* snapshotPath,
+                      const char* includePath,
+                      const char* targetDir, DWORD* exitCode);
+
 #endif /* RESTIC_PROCESS_H */
