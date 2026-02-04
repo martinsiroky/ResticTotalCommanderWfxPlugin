@@ -2,6 +2,7 @@
 #include "repo_config.h"
 #include "restic_process.h"
 #include "json_parse.h"
+#include "ls_cache.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -287,6 +288,16 @@ static int FetchSnapshots(RepoConfig* repo, ResticSnapshot** outSnapshots) {
         sc->count = numSnaps;
         sc->fetchTimeMs = now;
         if (sc->snapshots) g_SnapCacheCount++;
+    }
+
+    /* Purge persistent cache for deleted snapshots */
+    if (numSnaps > 0) {
+        const char* validIds[256];
+        int validCount = (numSnaps < 256) ? numSnaps : 256;
+        for (i = 0; i < validCount; i++) {
+            validIds[i] = (*outSnapshots)[i].shortId;
+        }
+        LsCache_Purge(repo->name, validIds, validCount);
     }
 
     return numSnaps;
@@ -593,13 +604,40 @@ static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath
     char lsSubpathUtf8[MAX_PATH];
     AnsiToUtf8(lsSubpath, lsSubpathUtf8, MAX_PATH);
 
-    /* Check directory listing cache (keyed on UTF-8 path) */
+    /* Check in-memory directory listing cache (keyed on UTF-8 path) */
     for (i = 0; i < g_LsCacheCount; i++) {
         if (strcmp(g_LsCache[i].shortId, shortId) == 0 &&
             strcmp(g_LsCache[i].path, lsSubpathUtf8) == 0) {
             /* Cache hit — return deep copy */
             *outCount = g_LsCache[i].count;
             return CopyDirEntries(g_LsCache[i].entries, g_LsCache[i].count);
+        }
+    }
+
+    /* Check persistent SQLite cache */
+    {
+        int dbCount = 0;
+        DirEntry* dbEntries = LsCache_Lookup(repo->name, shortId, lsSubpathUtf8, &dbCount);
+        if (dbEntries && dbCount > 0) {
+            /* Populate in-memory cache from persistent hit */
+            LsCacheEntry* lce;
+            if (g_LsCacheCount >= LS_CACHE_MAX) {
+                free(g_LsCache[0].entries);
+                memmove(&g_LsCache[0], &g_LsCache[1],
+                        sizeof(LsCacheEntry) * (LS_CACHE_MAX - 1));
+                g_LsCacheCount--;
+            }
+            lce = &g_LsCache[g_LsCacheCount];
+            strncpy(lce->shortId, shortId, sizeof(lce->shortId) - 1);
+            lce->shortId[sizeof(lce->shortId) - 1] = '\0';
+            strncpy(lce->path, lsSubpathUtf8, MAX_PATH - 1);
+            lce->path[MAX_PATH - 1] = '\0';
+            lce->entries = CopyDirEntries(dbEntries, dbCount);
+            lce->count = dbCount;
+            if (lce->entries) g_LsCacheCount++;
+
+            *outCount = dbCount;
+            return dbEntries;
         }
     }
 
@@ -642,7 +680,7 @@ static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath
     free(lsEntries);
     *outCount = count;
 
-    /* Store in directory listing cache */
+    /* Store in in-memory directory listing cache */
     if (entries && count > 0) {
         LsCacheEntry* lce;
         if (g_LsCacheCount >= LS_CACHE_MAX) {
@@ -660,6 +698,9 @@ static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath
         lce->entries = CopyDirEntries(entries, count);
         lce->count = count;
         if (lce->entries) g_LsCacheCount++;
+
+        /* Persist to SQLite */
+        LsCache_Store(repo->name, shortId, lsSubpathUtf8, entries, count);
     }
 
     return entries;
@@ -937,6 +978,9 @@ int __stdcall FsInit(int PluginNr, tProgressProc pProgressProc,
 
     /* Load repo configuration */
     RepoStore_Load();
+
+    /* Initialize persistent directory listing cache */
+    LsCache_Init();
 
     return 0;
 }
@@ -1387,6 +1431,9 @@ int __stdcall FsDisconnect(char* DisconnectRoot) {
         SecureZeroMemory(g_RepoStore.repos[i].password, MAX_REPO_PASS);
         g_RepoStore.repos[i].hasPassword = FALSE;
     }
+
+    /* Shut down persistent directory listing cache */
+    LsCache_Shutdown();
 
     /* Delete temp files */
     DeleteTempDir();

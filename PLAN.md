@@ -156,9 +156,14 @@ Key functions: `Utf8ToAnsi()`, `AnsiToUtf8()`, `Utf8ToWide()` (in restic_process
 
 ## Plan: Phase 7 — Persistent caching of list of files in snapshot and folder
 
-- [ ] Cache in maybe sqlite. This will speed up browsing old snapshots with many files and folders, loading just the newly visited snapshots or folders.
+- [ ] Cache using maybe sqlite. Preserved between sessions. This will speed up browsing old snapshots with many files and folders, loading just the newly visited snapshots or folders when needed.
 
-## Plan: Phase 8 — Remove selected file from all snapshots
+## Plan: Phase 8 — Allow select password file for repository instead of password prompt
+
+- [ ] Add option in Add Repository dialog to select password file (allow both password and password file)
+- [ ] Path to password file stored in INI config so that user is not prompted every time
+
+## Plan: Phase 9 — Remove selected file from all snapshots
 
 - [ ] Implement file deletion via `restic rewrite` (with user confirmation dialog)
 

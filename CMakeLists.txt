@@ -3,6 +3,7 @@ project(restic-wfx LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_library(restic_wfx SHARED
     src/plugin_main.c
@@ -14,8 +15,12 @@ add_library(restic_wfx SHARED
     src/json_parse.h
     src/repo_config.c
     src/repo_config.h
+    src/ls_cache.c
+    src/ls_cache.h
     vendor/cJSON.c
     vendor/cJSON.h
+    vendor/sqlite3.c
+    vendor/sqlite3.h
     include/fsplugin.h
     restic_wfx.def
 )
@@ -35,6 +40,9 @@ set_target_properties(restic_wfx PROPERTIES
 target_compile_definitions(restic_wfx PRIVATE
     WIN32
     _WINDOWS
+    SQLITE_OMIT_LOAD_EXTENSION
+    SQLITE_THREADSAFE=1
+    SQLITE_DEFAULT_WAL_SYNCHRONOUS=1
 )
 
 target_link_libraries(restic_wfx PRIVATE
