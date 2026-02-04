@@ -13,6 +13,7 @@ typedef struct {
     char name[MAX_REPO_NAME];       /* display name */
     char path[MAX_REPO_PATH];       /* restic repo path */
     char password[MAX_REPO_PASS];   /* in-memory only, never persisted */
+    char passwordFile[MAX_PATH];    /* path to password file, persisted in INI */
     BOOL configured;                /* TRUE if this slot is active */
     BOOL hasPassword;               /* TRUE if password is cached in memory */
 } RepoConfig;

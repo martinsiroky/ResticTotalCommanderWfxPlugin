@@ -6,6 +6,22 @@
 
 RepoStore g_RepoStore;
 
+/* Read first line of a password file, trimming trailing newline. */
+static BOOL ReadPasswordFile(const char* filePath, char* outPass, int maxLen) {
+    FILE* f = fopen(filePath, "r");
+    int len;
+    if (!f) return FALSE;
+    if (!fgets(outPass, maxLen, f)) {
+        fclose(f);
+        return FALSE;
+    }
+    fclose(f);
+    len = (int)strlen(outPass);
+    while (len > 0 && (outPass[len-1] == '\n' || outPass[len-1] == '\r'))
+        outPass[--len] = '\0';
+    return (len > 0);
+}
+
 /* Build the config file path in %APPDATA%\GHISLER\plugins\wfx\restic_wfx\restic_wfx.ini */
 static void BuildConfigPath(void) {
     char appData[MAX_PATH];
@@ -53,6 +69,9 @@ void RepoStore_Load(void) {
                                   MAX_REPO_NAME, g_RepoStore.configFilePath);
         GetPrivateProfileStringA(section, "Path", "", g_RepoStore.repos[i].path,
                                   MAX_REPO_PATH, g_RepoStore.configFilePath);
+        GetPrivateProfileStringA(section, "PasswordFile", "",
+                                  g_RepoStore.repos[i].passwordFile, MAX_PATH,
+                                  g_RepoStore.configFilePath);
 
         g_RepoStore.repos[i].configured =
             (g_RepoStore.repos[i].name[0] != '\0' &&
@@ -76,6 +95,9 @@ void RepoStore_Save(void) {
         WritePrivateProfileStringA(section, "Name", g_RepoStore.repos[i].name,
                                     g_RepoStore.configFilePath);
         WritePrivateProfileStringA(section, "Path", g_RepoStore.repos[i].path,
+                                    g_RepoStore.configFilePath);
+        WritePrivateProfileStringA(section, "PasswordFile",
+                                    g_RepoStore.repos[i].passwordFile,
                                     g_RepoStore.configFilePath);
         /* Never persist password */
     }
@@ -134,6 +156,22 @@ BOOL RepoStore_PromptAdd(int pluginNr, tRequestProc requestProc) {
         return FALSE;
     }
 
+    char passFile[MAX_PATH] = {0};
+    if (repoPass[0] == '\0') {
+        /* Password empty — ask for password file path */
+        if (!requestProc(pluginNr, RT_Other, "Password File",
+                         "Enter path to password file:", passFile, MAX_PATH)) {
+            return FALSE;
+        }
+        if (passFile[0] == '\0') return FALSE;
+
+        if (!ReadPasswordFile(passFile, repoPass, MAX_REPO_PASS)) {
+            requestProc(pluginNr, RT_MsgOK, "Error",
+                         "Cannot read password file.", passFile, MAX_PATH);
+            return FALSE;
+        }
+    }
+
     /* Test connection by running restic snapshots */
     output = RunRestic(repoPath, repoPass, "snapshots", &exitCode);
     if (!output || exitCode != 0) {
@@ -152,6 +190,8 @@ BOOL RepoStore_PromptAdd(int pluginNr, tRequestProc requestProc) {
     strncpy(repo->name, repoName, MAX_REPO_NAME - 1);
     strncpy(repo->path, repoPath, MAX_REPO_PATH - 1);
     strncpy(repo->password, repoPass, MAX_REPO_PASS - 1);
+    if (passFile[0] != '\0')
+        strncpy(repo->passwordFile, passFile, MAX_PATH - 1);
     repo->configured = TRUE;
     repo->hasPassword = TRUE;
     g_RepoStore.count++;
@@ -173,6 +213,15 @@ BOOL RepoStore_EnsurePassword(RepoConfig* repo, int pluginNr, tRequestProc reque
     /* Already have password in memory */
     if (repo->hasPassword && repo->password[0] != '\0') {
         return TRUE;
+    }
+
+    /* Try password file */
+    if (repo->passwordFile[0] != '\0') {
+        if (ReadPasswordFile(repo->passwordFile, repo->password, MAX_REPO_PASS)) {
+            repo->hasPassword = TRUE;
+            return TRUE;
+        }
+        /* File unreadable — fall through to manual prompt */
     }
 
     memset(buf, 0, sizeof(buf));
