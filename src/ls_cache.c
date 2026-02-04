@@ -24,23 +24,27 @@ static int g_DbCount = 0;
 static BOOL g_Initialized = FALSE;
 static char g_CacheDir[MAX_PATH] = {0};
 
-/* Build the cache directory path: %APPDATA%\TotalCmd\restic_wfx_cache\ */
+/* Build the cache directory path: %APPDATA%\GHISLER\plugins\wfx\restic_wfx\cache\ */
 static BOOL EnsureCacheDir(void) {
     char appData[MAX_PATH];
+    char dir[MAX_PATH];
 
     if (g_CacheDir[0] != '\0') return TRUE;
 
     if (FAILED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appData)))
         return FALSE;
 
-    snprintf(g_CacheDir, MAX_PATH, "%s\\TotalCmd\\restic_wfx_cache", appData);
-
     /* Create intermediate directories */
-    {
-        char parent[MAX_PATH];
-        snprintf(parent, MAX_PATH, "%s\\TotalCmd", appData);
-        CreateDirectoryA(parent, NULL);
-    }
+    snprintf(dir, MAX_PATH, "%s\\GHISLER", appData);
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir, MAX_PATH, "%s\\GHISLER\\plugins", appData);
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir, MAX_PATH, "%s\\GHISLER\\plugins\\wfx", appData);
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir, MAX_PATH, "%s\\GHISLER\\plugins\\wfx\\restic_wfx", appData);
+    CreateDirectoryA(dir, NULL);
+
+    snprintf(g_CacheDir, MAX_PATH, "%s\\GHISLER\\plugins\\wfx\\restic_wfx\\cache", appData);
     CreateDirectoryA(g_CacheDir, NULL);
 
     return (GetFileAttributesA(g_CacheDir) != INVALID_FILE_ATTRIBUTES);

@@ -6,9 +6,10 @@
 
 RepoStore g_RepoStore;
 
-/* Build the config file path in %APPDATA%\TotalCmd\restic_wfx.ini */
+/* Build the config file path in %APPDATA%\GHISLER\plugins\wfx\restic_wfx\restic_wfx.ini */
 static void BuildConfigPath(void) {
     char appData[MAX_PATH];
+    char dir[MAX_PATH];
 
     if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appData) != S_OK) {
         /* Fallback: use current directory */
@@ -16,10 +17,18 @@ static void BuildConfigPath(void) {
         return;
     }
 
-    snprintf(g_RepoStore.configFilePath, MAX_PATH, "%s\\TotalCmd", appData);
-    CreateDirectoryA(g_RepoStore.configFilePath, NULL); /* ensure dir exists */
-    strncat(g_RepoStore.configFilePath, "\\restic_wfx.ini",
-            MAX_PATH - strlen(g_RepoStore.configFilePath) - 1);
+    /* Create intermediate directories */
+    snprintf(dir, MAX_PATH, "%s\\GHISLER", appData);
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir, MAX_PATH, "%s\\GHISLER\\plugins", appData);
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir, MAX_PATH, "%s\\GHISLER\\plugins\\wfx", appData);
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir, MAX_PATH, "%s\\GHISLER\\plugins\\wfx\\restic_wfx", appData);
+    CreateDirectoryA(dir, NULL);
+
+    snprintf(g_RepoStore.configFilePath, MAX_PATH,
+             "%s\\GHISLER\\plugins\\wfx\\restic_wfx\\restic_wfx.ini", appData);
 }
 
 void RepoStore_Load(void) {

@@ -58,7 +58,7 @@ Total Commander WFX filesystem plugin for browsing restic backup repositories.
 
 1. **Snapshot cache** (`g_SnapCache[]`) — TTL-based (5 min), per-repo, max 16 entries
 2. **Directory listing cache** (`g_LsCache[]`) — in-memory, immutable, FIFO eviction, max 32 entries
-3. **Persistent directory listing cache** (SQLite) — `%APPDATA%\TotalCmd\restic_wfx_cache\<repo>.db`
+3. **Persistent directory listing cache** (SQLite) — `%APPDATA%\GHISLER\plugins\wfx\restic_wfx\cache\<repo>.db`
    - Schema: `cached_dirs` (sentinel table) + `dir_entries` (actual entries)
    - Keyed on `(short_id, path)`
    - Lookup flow: in-memory -> SQLite -> restic CLI
@@ -83,3 +83,6 @@ Total Commander WFX filesystem plugin for browsing restic backup repositories.
 - Errors in persistent cache degrade gracefully (log + continue without cache)
 - Passwords are never persisted to disk; zeroed with `SecureZeroMemory` on disconnect
 - Plugin exports defined in `restic_wfx.def`
+- All persistent data lives under `%APPDATA%\GHISLER\plugins\wfx\restic_wfx\`
+  - INI config: `restic_wfx.ini`
+  - SQLite cache: `cache\<repo>.db`
