@@ -49,6 +49,10 @@ typedef struct {
    Returns the number of entries, or -1 on error. */
 int ParseLsOutput(const char* ndjson, const char* parentPath, ResticLsEntry** outEntries);
 
+/* Parse ALL entries from restic ls NDJSON output (no parent filtering).
+   Returns count of entries, or -1 on error. Caller must free *outEntries. */
+int ParseLsOutputAll(const char* ndjson, ResticLsEntry** outEntries);
+
 /* A single entry from `restic find --json` output */
 typedef struct {
     char snapshotId[65];   /* full snapshot ID */

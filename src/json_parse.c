@@ -228,6 +228,95 @@ int ParseFindOutput(const char* json, ResticFindEntry** outEntries) {
     return count;
 }
 
+int ParseLsOutputAll(const char* ndjson, ResticLsEntry** outEntries) {
+    ResticLsEntry* entries = NULL;
+    int count = 0, capacity = 0;
+    const char* lineStart;
+    const char* lineEnd;
+
+    if (!ndjson || !outEntries) return -1;
+    *outEntries = NULL;
+
+    lineStart = ndjson;
+    while (*lineStart) {
+        char* lineBuf;
+        cJSON* obj;
+        int lineLen;
+
+        lineEnd = strchr(lineStart, '\n');
+        if (!lineEnd) lineEnd = lineStart + strlen(lineStart);
+        lineLen = (int)(lineEnd - lineStart);
+
+        /* Skip empty lines */
+        if (lineLen == 0) {
+            lineStart = lineEnd + (*lineEnd ? 1 : 0);
+            continue;
+        }
+
+        lineBuf = (char*)malloc(lineLen + 1);
+        if (!lineBuf) break;
+        memcpy(lineBuf, lineStart, lineLen);
+        lineBuf[lineLen] = '\0';
+
+        obj = cJSON_Parse(lineBuf);
+        free(lineBuf);
+
+        if (obj) {
+            const cJSON* nameItem = cJSON_GetObjectItemCaseSensitive(obj, "name");
+            const cJSON* pathItem = cJSON_GetObjectItemCaseSensitive(obj, "path");
+            const cJSON* typeItem = cJSON_GetObjectItemCaseSensitive(obj, "type");
+
+            /* Skip snapshot summary line (has no "name" field) */
+            if (cJSON_IsString(nameItem) && cJSON_IsString(pathItem) && cJSON_IsString(typeItem)) {
+                /* Normalize path separators to forward slashes */
+                char normalizedPath[MAX_PATH];
+                char* np;
+                strncpy(normalizedPath, pathItem->valuestring, MAX_PATH - 1);
+                normalizedPath[MAX_PATH - 1] = '\0';
+                for (np = normalizedPath; *np; np++) {
+                    if (*np == '\\') *np = '/';
+                }
+
+                /* Grow array */
+                if (count >= capacity) {
+                    capacity = (capacity == 0) ? 64 : (capacity * 2);
+                    entries = (ResticLsEntry*)realloc(entries, sizeof(ResticLsEntry) * capacity);
+                    if (!entries) { cJSON_Delete(obj); break; }
+                }
+
+                ResticLsEntry* e = &entries[count];
+                memset(e, 0, sizeof(ResticLsEntry));
+
+                Utf8ToAnsi(nameItem->valuestring, e->name, MAX_PATH);
+                strncpy(e->path, normalizedPath, MAX_PATH - 1);
+                strncpy(e->type, typeItem->valuestring, sizeof(e->type) - 1);
+
+                /* Size (may be absent for directories) */
+                const cJSON* sizeItem = cJSON_GetObjectItemCaseSensitive(obj, "size");
+                if (cJSON_IsNumber(sizeItem)) {
+                    unsigned long long sz = (unsigned long long)sizeItem->valuedouble;
+                    e->sizeLow = (DWORD)(sz & 0xFFFFFFFF);
+                    e->sizeHigh = (DWORD)(sz >> 32);
+                }
+
+                /* Modification time */
+                const cJSON* mtimeItem = cJSON_GetObjectItemCaseSensitive(obj, "mtime");
+                if (cJSON_IsString(mtimeItem)) {
+                    strncpy(e->mtime, mtimeItem->valuestring, sizeof(e->mtime) - 1);
+                }
+
+                count++;
+            }
+            cJSON_Delete(obj);
+        }
+
+        lineStart = lineEnd + (*lineEnd ? 1 : 0);
+    }
+
+    *outEntries = entries;
+    return count;
+}
+
 int ParseLsOutput(const char* ndjson, const char* parentPath, ResticLsEntry** outEntries) {
     ResticLsEntry* entries = NULL;
     int count = 0, capacity = 0;

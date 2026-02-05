@@ -1,4 +1,5 @@
 #include "ls_cache.h"
+#include "json_parse.h"  /* For AnsiToUtf8, Utf8ToAnsi */
 #include "sqlite3.h"
 #include <string.h>
 #include <stdlib.h>
@@ -17,6 +18,8 @@ typedef struct {
     sqlite3_stmt* stmtLookupEntries;
     sqlite3_stmt* stmtInsertSentinel;
     sqlite3_stmt* stmtInsertEntry;
+    sqlite3_stmt* stmtCheckLoaded;
+    sqlite3_stmt* stmtMarkLoaded;
 } DbConn;
 
 static DbConn g_Dbs[MAX_DBS];
@@ -61,6 +64,8 @@ static void FinalizeStatements(DbConn* conn) {
     if (conn->stmtLookupEntries)  { sqlite3_finalize(conn->stmtLookupEntries);  conn->stmtLookupEntries = NULL; }
     if (conn->stmtInsertSentinel) { sqlite3_finalize(conn->stmtInsertSentinel); conn->stmtInsertSentinel = NULL; }
     if (conn->stmtInsertEntry)    { sqlite3_finalize(conn->stmtInsertEntry);    conn->stmtInsertEntry = NULL; }
+    if (conn->stmtCheckLoaded)    { sqlite3_finalize(conn->stmtCheckLoaded);    conn->stmtCheckLoaded = NULL; }
+    if (conn->stmtMarkLoaded)     { sqlite3_finalize(conn->stmtMarkLoaded);     conn->stmtMarkLoaded = NULL; }
 }
 
 /* Create schema tables if they don't exist */
@@ -85,6 +90,10 @@ static BOOL CreateSchema(sqlite3* db) {
         "  mtime_low INTEGER NOT NULL,"
         "  mtime_high INTEGER NOT NULL,"
         "  PRIMARY KEY (short_id, path, name)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS snapshot_loaded ("
+        "  short_id TEXT PRIMARY KEY,"
+        "  loaded_at INTEGER NOT NULL"
         ");";
 
     char* errMsg = NULL;
@@ -125,6 +134,16 @@ static BOOL PrepareStatements(DbConn* conn) {
         "(short_id, path, name, is_dir, size_low, size_high, mtime_low, mtime_high) "
         "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         -1, &conn->stmtInsertEntry, NULL);
+    if (rc != SQLITE_OK) return FALSE;
+
+    rc = sqlite3_prepare_v2(conn->db,
+        "SELECT 1 FROM snapshot_loaded WHERE short_id=?1",
+        -1, &conn->stmtCheckLoaded, NULL);
+    if (rc != SQLITE_OK) return FALSE;
+
+    rc = sqlite3_prepare_v2(conn->db,
+        "INSERT OR REPLACE INTO snapshot_loaded (short_id, loaded_at) VALUES (?1, ?2)",
+        -1, &conn->stmtMarkLoaded, NULL);
     if (rc != SQLITE_OK) return FALSE;
 
     return TRUE;
@@ -232,10 +251,12 @@ DirEntry* LsCache_Lookup(const char* repoName, const char* shortId,
 
     entryCount = sqlite3_column_int(conn->stmtLookupSentinel, 0);
 
-    /* Directory with 0 entries is a valid cache hit */
+    /* Directory with 0 entries is a valid cache hit.
+       Return a non-NULL malloc'd pointer so the caller can distinguish
+       "cached empty" (non-NULL, count=0) from "not cached" (NULL). */
     if (entryCount == 0) {
         *outCount = 0;
-        return NULL;  /* 0 entries but sentinel exists — caller checks outCount */
+        return (DirEntry*)malloc(1);
     }
 
     /* Fetch actual entries */
@@ -250,10 +271,13 @@ DirEntry* LsCache_Lookup(const char* repoName, const char* shortId,
         int idx = 0;
         while ((rc = sqlite3_step(conn->stmtLookupEntries)) == SQLITE_ROW && idx < entryCount) {
             DirEntry* e = &entries[idx];
-            const char* name = (const char*)sqlite3_column_text(conn->stmtLookupEntries, 0);
+            const char* nameUtf8 = (const char*)sqlite3_column_text(conn->stmtLookupEntries, 0);
 
-            strncpy(e->name, name ? name : "", MAX_PATH - 1);
-            e->name[MAX_PATH - 1] = '\0';
+            if (nameUtf8) {
+                Utf8ToAnsi(nameUtf8, e->name, MAX_PATH);
+            } else {
+                e->name[0] = '\0';
+            }
             e->isDirectory = sqlite3_column_int(conn->stmtLookupEntries, 1);
             e->fileSizeLow = (DWORD)sqlite3_column_int64(conn->stmtLookupEntries, 2);
             e->fileSizeHigh = (DWORD)sqlite3_column_int64(conn->stmtLookupEntries, 3);
@@ -293,10 +317,13 @@ void LsCache_Store(const char* repoName, const char* shortId,
 
     /* Insert directory entries */
     for (i = 0; i < count; i++) {
+        char nameUtf8[MAX_PATH];
+        AnsiToUtf8(entries[i].name, nameUtf8, MAX_PATH);
+
         sqlite3_reset(conn->stmtInsertEntry);
         sqlite3_bind_text(conn->stmtInsertEntry, 1, shortId, -1, SQLITE_STATIC);
         sqlite3_bind_text(conn->stmtInsertEntry, 2, path, -1, SQLITE_STATIC);
-        sqlite3_bind_text(conn->stmtInsertEntry, 3, entries[i].name, -1, SQLITE_STATIC);
+        sqlite3_bind_text(conn->stmtInsertEntry, 3, nameUtf8, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int(conn->stmtInsertEntry, 4, entries[i].isDirectory);
         sqlite3_bind_int64(conn->stmtInsertEntry, 5, (sqlite3_int64)entries[i].fileSizeLow);
         sqlite3_bind_int64(conn->stmtInsertEntry, 6, (sqlite3_int64)entries[i].fileSizeHigh);
@@ -381,8 +408,56 @@ int LsCache_Purge(const char* repoName, const char** validShortIds, int validCou
         sqlite3_finalize(stmt);
     }
 
+    /* Same for snapshot_loaded */
+    offset = snprintf(sql, sqlLen, "DELETE FROM snapshot_loaded WHERE short_id NOT IN (");
+    for (i = 0; i < validCount; i++) {
+        if (i > 0) offset += snprintf(sql + offset, sqlLen - offset, ",");
+        offset += snprintf(sql + offset, sqlLen - offset, "?%d", i + 1);
+    }
+    snprintf(sql + offset, sqlLen - offset, ")");
+
+    if (sqlite3_prepare_v2(conn->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        for (i = 0; i < validCount; i++) {
+            sqlite3_bind_text(stmt, i + 1, validShortIds[i], -1, SQLITE_STATIC);
+        }
+        if (sqlite3_step(stmt) == SQLITE_DONE) {
+            totalDeleted += sqlite3_changes(conn->db);
+        }
+        sqlite3_finalize(stmt);
+    }
+
     free(sql);
     return totalDeleted;
+}
+
+BOOL LsCache_IsSnapshotLoaded(const char* repoName, const char* shortId) {
+    DbConn* conn;
+    int rc;
+
+    if (!g_Initialized) return FALSE;
+
+    conn = GetConnection(repoName);
+    if (!conn) return FALSE;
+
+    sqlite3_reset(conn->stmtCheckLoaded);
+    sqlite3_bind_text(conn->stmtCheckLoaded, 1, shortId, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(conn->stmtCheckLoaded);
+    return (rc == SQLITE_ROW);
+}
+
+void LsCache_MarkSnapshotLoaded(const char* repoName, const char* shortId) {
+    DbConn* conn;
+
+    if (!g_Initialized) return;
+
+    conn = GetConnection(repoName);
+    if (!conn) return;
+
+    sqlite3_reset(conn->stmtMarkLoaded);
+    sqlite3_bind_text(conn->stmtMarkLoaded, 1, shortId, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(conn->stmtMarkLoaded, 2, (sqlite3_int64)GetTickCount64());
+    sqlite3_step(conn->stmtMarkLoaded);
 }
 
 void LsCache_DeleteRepo(const char* repoName) {

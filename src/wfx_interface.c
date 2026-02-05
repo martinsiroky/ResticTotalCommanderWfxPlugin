@@ -573,20 +573,155 @@ static void BuildLsSubpath(const char* originalBackupPath, const char* rest, cha
     ToResticInternalPath(temp, outPath, maxLen);
 }
 
+/* Extract parent directory from a UTF-8 forward-slash path.
+   "/d/Fotky/Mix/subdir/file.txt" → "/d/Fotky/Mix/subdir"
+   "/d/file.txt" → "/d"
+   "/file.txt" → "/" */
+static void GetParentPath(const char* path, char* parent, int maxLen) {
+    const char* lastSlash = strrchr(path, '/');
+    int len;
+    if (!lastSlash || lastSlash == path) {
+        strncpy(parent, "/", maxLen - 1);
+        parent[maxLen - 1] = '\0';
+        return;
+    }
+    len = (int)(lastSlash - path);
+    if (len >= maxLen) len = maxLen - 1;
+    memcpy(parent, path, len);
+    parent[len] = '\0';
+}
+
+/* qsort comparator for ResticLsEntry by parent directory of the path field. */
+static int CompareByParentPath(const void* a, const void* b) {
+    char parentA[MAX_PATH], parentB[MAX_PATH];
+    GetParentPath(((const ResticLsEntry*)a)->path, parentA, MAX_PATH);
+    GetParentPath(((const ResticLsEntry*)b)->path, parentB, MAX_PATH);
+    return strcmp(parentA, parentB);
+}
+
+/* Parse all entries from a restic ls call and bulk-cache every subdirectory
+   into SQLite. Returns the direct children of requestedPathUtf8 via outDirectChildren. */
+static void BulkCacheSubdirectories(
+    const char* repoName, const char* shortId,
+    const char* requestedPathUtf8,
+    ResticLsEntry* allEntries, int allCount,
+    DirEntry** outDirectChildren, int* outDirectCount)
+{
+    char** parentPathList = NULL;
+    int numParents = 0;
+    int i;
+
+    *outDirectChildren = NULL;
+    *outDirectCount = 0;
+
+    if (allCount <= 0) return;
+
+    /* Sort all entries by parent path */
+    qsort(allEntries, allCount, sizeof(ResticLsEntry), CompareByParentPath);
+
+    /* Allocate array to track unique parent paths (for empty dir detection) */
+    parentPathList = (char**)malloc(sizeof(char*) * allCount);
+    if (!parentPathList) return;
+
+    /* Walk sorted array, grouping consecutive entries with same parent */
+    i = 0;
+    while (i < allCount) {
+        char currentParent[MAX_PATH];
+        int groupStart, groupCount, j;
+        DirEntry* dirEntries;
+
+        GetParentPath(allEntries[i].path, currentParent, MAX_PATH);
+        groupStart = i;
+
+        /* Find end of this group */
+        while (i < allCount) {
+            char thisParent[MAX_PATH];
+            GetParentPath(allEntries[i].path, thisParent, MAX_PATH);
+            if (strcmp(thisParent, currentParent) != 0) break;
+            i++;
+        }
+        groupCount = i - groupStart;
+
+        /* Record this parent path for empty dir detection */
+        {
+            char* dup = (char*)malloc(strlen(currentParent) + 1);
+            if (dup) {
+                strcpy(dup, currentParent);
+                parentPathList[numParents++] = dup;
+            }
+        }
+
+        /* Convert ResticLsEntry group → DirEntry array */
+        dirEntries = (DirEntry*)malloc(sizeof(DirEntry) * groupCount);
+        if (!dirEntries) continue;
+
+        for (j = 0; j < groupCount; j++) {
+            ResticLsEntry* le = &allEntries[groupStart + j];
+            DirEntry* de = &dirEntries[j];
+            strncpy(de->name, le->name, MAX_PATH - 1);
+            de->name[MAX_PATH - 1] = '\0';
+            de->isDirectory = (strcmp(le->type, "dir") == 0);
+            de->fileSizeLow = le->sizeLow;
+            de->fileSizeHigh = le->sizeHigh;
+            de->lastWriteTime = ParseISOTime(le->mtime);
+        }
+
+        /* Store in SQLite persistent cache */
+        LsCache_Store(repoName, shortId, currentParent, dirEntries, groupCount);
+
+        /* If this group's parent matches the requested path, return these entries */
+        if (strcmp(currentParent, requestedPathUtf8) == 0) {
+            *outDirectChildren = dirEntries;  /* transfer ownership */
+            *outDirectCount = groupCount;
+        } else {
+            free(dirEntries);
+        }
+    }
+
+    /* Handle empty directories: dir entries whose path is not a parent of any other entry.
+       parentPathList is already sorted (since allEntries was sorted by parent). */
+    for (i = 0; i < allCount; i++) {
+        BOOL found;
+        int lo, hi;
+
+        if (strcmp(allEntries[i].type, "dir") != 0) continue;
+
+        /* Binary search for this dir's path in parentPathList */
+        found = FALSE;
+        lo = 0;
+        hi = numParents - 1;
+        while (lo <= hi) {
+            int mid = (lo + hi) / 2;
+            int cmp = strcmp(allEntries[i].path, parentPathList[mid]);
+            if (cmp == 0) { found = TRUE; break; }
+            else if (cmp < 0) hi = mid - 1;
+            else lo = mid + 1;
+        }
+
+        if (!found) {
+            /* Empty directory — store sentinel so cache recognizes it */
+            LsCache_Store(repoName, shortId, allEntries[i].path, NULL, 0);
+        }
+    }
+
+    /* Cleanup parent path list */
+    for (i = 0; i < numParents; i++) free(parentPathList[i]);
+    free(parentPathList);
+}
+
 /* List directory contents inside a snapshot. Uses cache for repeat visits. */
 static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath,
                                       const char* snapshotDisplayName, const char* subpath,
                                       int* outCount) {
     DirEntry* entries = NULL;
-    int count = 0, capacity = 0;
+    int count = 0;
     char shortId[16];
     char originalPath[MAX_PATH];
     char lsSubpath[MAX_PATH];
     char args[MAX_PATH * 2];
     char* output;
     DWORD exitCode;
-    ResticLsEntry* lsEntries = NULL;
-    int numLsEntries, i;
+    int i;
 
     *outCount = 0;
 
@@ -614,35 +749,50 @@ static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath
         }
     }
 
-    /* Check persistent SQLite cache */
+    /* Check persistent SQLite cache.
+       LsCache_Lookup returns non-NULL for any cache hit (even empty dirs). */
     {
         int dbCount = 0;
         DirEntry* dbEntries = LsCache_Lookup(repo->name, shortId, lsSubpathUtf8, &dbCount);
-        if (dbEntries && dbCount > 0) {
-            /* Populate in-memory cache from persistent hit */
-            LsCacheEntry* lce;
-            if (g_LsCacheCount >= LS_CACHE_MAX) {
-                free(g_LsCache[0].entries);
-                memmove(&g_LsCache[0], &g_LsCache[1],
-                        sizeof(LsCacheEntry) * (LS_CACHE_MAX - 1));
-                g_LsCacheCount--;
-            }
-            lce = &g_LsCache[g_LsCacheCount];
-            strncpy(lce->shortId, shortId, sizeof(lce->shortId) - 1);
-            lce->shortId[sizeof(lce->shortId) - 1] = '\0';
-            strncpy(lce->path, lsSubpathUtf8, MAX_PATH - 1);
-            lce->path[MAX_PATH - 1] = '\0';
-            lce->entries = CopyDirEntries(dbEntries, dbCount);
-            lce->count = dbCount;
-            if (lce->entries) g_LsCacheCount++;
+        if (dbEntries) {
+            if (dbCount > 0) {
+                /* Non-empty cache hit — populate in-memory cache */
+                LsCacheEntry* lce;
+                if (g_LsCacheCount >= LS_CACHE_MAX) {
+                    free(g_LsCache[0].entries);
+                    memmove(&g_LsCache[0], &g_LsCache[1],
+                            sizeof(LsCacheEntry) * (LS_CACHE_MAX - 1));
+                    g_LsCacheCount--;
+                }
+                lce = &g_LsCache[g_LsCacheCount];
+                strncpy(lce->shortId, shortId, sizeof(lce->shortId) - 1);
+                lce->shortId[sizeof(lce->shortId) - 1] = '\0';
+                strncpy(lce->path, lsSubpathUtf8, MAX_PATH - 1);
+                lce->path[MAX_PATH - 1] = '\0';
+                lce->entries = CopyDirEntries(dbEntries, dbCount);
+                lce->count = dbCount;
+                if (lce->entries) g_LsCacheCount++;
 
-            *outCount = dbCount;
-            return dbEntries;
+                *outCount = dbCount;
+                return dbEntries;
+            }
+            /* Empty directory cache hit — don't fetch from restic */
+            free(dbEntries);
+            *outCount = 0;
+            return NULL;
         }
     }
 
-    /* Cache miss — fetch from restic (pass UTF-8 path) */
-    snprintf(args, sizeof(args), "ls --json %s \"%s\"", shortId, lsSubpathUtf8);
+    /* Check if snapshot was already fully loaded (bulk-cached).
+       If so, and we got here (cache miss), the folder doesn't exist. */
+    if (LsCache_IsSnapshotLoaded(repo->name, shortId)) {
+        *outCount = 0;
+        return NULL;
+    }
+
+    /* Cache miss — fetch full recursive listing from restic (no path filter,
+       so we get ALL entries and can bulk-cache every subdirectory at once) */
+    snprintf(args, sizeof(args), "ls --json %s", shortId);
 
     output = RunRestic(repo->path, repo->password, args, &exitCode);
     if (!output) {
@@ -659,28 +809,35 @@ static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath
         return NULL;
     }
 
-    /* Pass UTF-8 parentPath so it matches raw UTF-8 paths from restic JSON */
-    numLsEntries = ParseLsOutput(output, lsSubpathUtf8, &lsEntries);
-    free(output);
+    /* Parse ALL entries from restic ls and bulk-cache every subdirectory */
+    {
+        ResticLsEntry* allEntries = NULL;
+        int allCount = ParseLsOutputAll(output, &allEntries);
+        free(output);
 
-    if (numLsEntries <= 0) {
-        free(lsEntries);
+        if (allCount <= 0) {
+            free(allEntries);
+            *outCount = 0;
+            return NULL;
+        }
+
+        BulkCacheSubdirectories(repo->name, shortId, lsSubpathUtf8,
+                                allEntries, allCount, &entries, &count);
+        free(allEntries);
+
+        /* Mark this snapshot as fully loaded so we don't re-fetch for non-existent paths */
+        LsCache_MarkSnapshotLoaded(repo->name, shortId);
+    }
+
+    if (count <= 0 || !entries) {
+        free(entries);
         *outCount = 0;
         return NULL;
     }
 
-    for (i = 0; i < numLsEntries; i++) {
-        BOOL isDir = (strcmp(lsEntries[i].type, "dir") == 0);
-        FILETIME ft = ParseISOTime(lsEntries[i].mtime);
-        AddEntry(&entries, &count, &capacity,
-                 lsEntries[i].name, isDir,
-                 lsEntries[i].sizeLow, lsEntries[i].sizeHigh, ft);
-    }
-
-    free(lsEntries);
     *outCount = count;
 
-    /* Store in in-memory directory listing cache */
+    /* Store in in-memory directory listing cache (SQLite already done by BulkCacheSubdirectories) */
     if (entries && count > 0) {
         LsCacheEntry* lce;
         if (g_LsCacheCount >= LS_CACHE_MAX) {
@@ -698,9 +855,6 @@ static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath
         lce->entries = CopyDirEntries(entries, count);
         lce->count = count;
         if (lce->entries) g_LsCacheCount++;
-
-        /* Persist to SQLite */
-        LsCache_Store(repo->name, shortId, lsSubpathUtf8, entries, count);
     }
 
     return entries;

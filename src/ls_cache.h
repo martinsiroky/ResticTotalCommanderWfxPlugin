@@ -25,6 +25,12 @@ int LsCache_Purge(const char* repoName, const char** validShortIds, int validCou
 /* Delete the entire database for a repository. */
 void LsCache_DeleteRepo(const char* repoName);
 
+/* Check if a snapshot has been fully loaded (bulk-cached). */
+BOOL LsCache_IsSnapshotLoaded(const char* repoName, const char* shortId);
+
+/* Mark a snapshot as fully loaded after bulk caching. */
+void LsCache_MarkSnapshotLoaded(const char* repoName, const char* shortId);
+
 /* Shut down the persistent cache: close all open DB connections. */
 void LsCache_Shutdown(void);
 

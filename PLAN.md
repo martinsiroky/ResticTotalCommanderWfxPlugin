@@ -167,6 +167,17 @@ Key functions: `Utf8ToAnsi()`, `AnsiToUtf8()`, `Utf8ToWide()` (in restic_process
 
 - [x] Implement file deletion via `restic rewrite` (with user confirmation dialog with exact command shown)
 
+## Implemented: Phase 10 — Better loading content of snapshots
+
+- [x] It is not needed to load content of each folder separately. When loading content of snapshot it returns also content of all subfolders. So when user open folder it is possible to load all and cache it. This will speed up browsing snapshots with many small files and folders.
+
+## Planned: Phase 11 — Minor improvements and bug fixes
+
+- [ ] In case new repository is added with trailing slash or backslash, browsing is not working - remove in this case
+- [ ] Add some text file with instructions to the plugin package (especially how to add repository, how to enter password or password file, remove file etc.)
+- [ ] When removing file from all snapshots, just remove it from cache/db too, no need to clear whole cache/db for repository. Just add possibility to force refresh folder or snapshot content from restic just in case.
+- [ ] After snapshot is deleted outside the plugin by forget command (to retain only some daily snapshots, some monthly etc.), the plugin still shows the deleted snapshot. Remove orphan snapshots from db after loading snapshots from restic.
+
 ## Limits
 
 | Constant | Value |
