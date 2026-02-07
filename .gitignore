@@ -2,6 +2,7 @@ descript.ion
 /.idea
 /.claude
 /build
+/release
 compile.log
 compile_commands.json
 nul
