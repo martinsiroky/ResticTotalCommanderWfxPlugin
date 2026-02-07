@@ -9,10 +9,47 @@
 #include <shellapi.h>
 #include <shlwapi.h>
 
+/* Module handle from plugin_main.c for finding DLL directory */
+extern HMODULE g_hModule;
+
 /* [All Files] virtual snapshot constants */
 #define ALL_FILES_ENTRY    "[All Files]"
-#define VERSION_PREFIX     "[v] "
-#define VERSION_PREFIX_LEN 4
+#define VERSION_PREFIX     "[versions] "
+#define VERSION_PREFIX_LEN 11
+
+/* Get the path to README.txt next to the plugin DLL.
+   Returns TRUE if the file exists, FALSE otherwise. */
+static BOOL GetReadmePath(char* outPath, size_t maxLen) {
+    char dllPath[MAX_PATH];
+    char* lastSlash;
+
+    if (!GetModuleFileNameA(g_hModule, dllPath, MAX_PATH)) {
+        OutputDebugStringA("restic_wfx: GetModuleFileNameA failed\n");
+        return FALSE;
+    }
+
+    OutputDebugStringA("restic_wfx: DLL path: ");
+    OutputDebugStringA(dllPath);
+    OutputDebugStringA("\n");
+
+    lastSlash = strrchr(dllPath, '\\');
+    if (!lastSlash) return FALSE;
+
+    *lastSlash = '\0';
+    snprintf(outPath, maxLen, "%s\\README.txt", dllPath);
+
+    OutputDebugStringA("restic_wfx: Looking for README at: ");
+    OutputDebugStringA(outPath);
+    OutputDebugStringA("\n");
+
+    if (GetFileAttributesA(outPath) != INVALID_FILE_ATTRIBUTES) {
+        OutputDebugStringA("restic_wfx: README.txt found!\n");
+        return TRUE;
+    } else {
+        OutputDebugStringA("restic_wfx: README.txt NOT found\n");
+        return FALSE;
+    }
+}
 
 /* Global plugin state */
 static int g_PluginNr = 0;
@@ -1046,8 +1083,10 @@ DirEntry* GetEntriesForPath(const char* path, int* outCount) {
     GetSystemTimeAsFileTime(&ftNow);
 
     if (numSegs == 0) {
-        /* Root: list configured repos + [Add Repository] */
+        /* Root: list configured repos + [Add Repository] + README.txt */
         int i;
+        char readmePath[MAX_PATH];
+
         for (i = 0; i < g_RepoStore.count; i++) {
             if (g_RepoStore.repos[i].configured) {
                 AddEntry(&entries, &count, &capacity,
@@ -1056,6 +1095,16 @@ DirEntry* GetEntriesForPath(const char* path, int* outCount) {
         }
         AddEntry(&entries, &count, &capacity,
                  "[Add Repository]", TRUE, 0, 0, ftNow);
+
+        /* Add README.txt if it exists next to the DLL */
+        if (GetReadmePath(readmePath, MAX_PATH)) {
+            WIN32_FILE_ATTRIBUTE_DATA fad;
+            if (GetFileAttributesExA(readmePath, GetFileExInfoStandard, &fad)) {
+                AddEntry(&entries, &count, &capacity,
+                         "README.txt", FALSE, fad.nFileSizeLow, fad.nFileSizeHigh,
+                         fad.ftLastWriteTime);
+            }
+        }
     }
     else if (numSegs == 1 && strcmp(seg1, "[Add Repository]") == 0) {
         /* Trigger add-repo dialog */
@@ -1085,10 +1134,10 @@ DirEntry* GetEntriesForPath(const char* path, int* outCount) {
         RepoConfig* repo = RepoStore_FindByName(seg1);
         if (repo && RepoStore_EnsurePassword(repo, g_PluginNr, g_RequestProc)) {
             if (strcmp(seg3, "[Refresh snapshot list]") == 0) {
-                /* Invalidate cache - return empty so user goes back up to see refreshed list */
+                /* Invalidate cache - show hint so user knows to refresh */
                 InvalidateSnapshotCache(repo->name);
-                entries = NULL;
-                count = 0;
+                AddEntry(&entries, &count, &capacity,
+                         "Snapshot cache cleared - go back to see it", FALSE, 0, 0, ftNow);
             }
             else if (IsAllFilesPath(seg3)) {
                 const char* vComp = FindVersionComponent(rest);
@@ -1425,6 +1474,22 @@ int __stdcall FsGetFile(char* RemoteName, char* LocalName, int CopyFlags,
     DWORD exitCode;
     BOOL ok;
 
+    /* Handle README.txt at root */
+    if (strcmp(RemoteName, "\\README.txt") == 0) {
+        char readmePath[MAX_PATH];
+        if (!GetReadmePath(readmePath, MAX_PATH))
+            return FS_FILE_NOTFOUND;
+
+        if (!(CopyFlags & FS_COPYFLAGS_OVERWRITE)) {
+            if (GetFileAttributesA(LocalName) != INVALID_FILE_ATTRIBUTES)
+                return FS_FILE_EXISTS;
+        }
+
+        if (CopyFileA(readmePath, LocalName, FALSE))
+            return FS_FILE_OK;
+        return FS_FILE_READERROR;
+    }
+
     /* Resume not supported for restic dump */
     if ((CopyFlags & FS_COPYFLAGS_RESUME) && !(CopyFlags & FS_COPYFLAGS_OVERWRITE))
         return FS_FILE_NOTSUPPORTED;
@@ -1565,6 +1630,16 @@ int __stdcall FsExecuteFile(HWND MainWin, char* RemoteName, char* Verb) {
     DWORD exitCode;
     BOOL ok;
 
+    /* Handle README.txt at root - just open it */
+    if (strcmp(RemoteName, "\\README.txt") == 0) {
+        char readmePath[MAX_PATH];
+        if (strcmp(Verb, "open") == 0 && GetReadmePath(readmePath, MAX_PATH)) {
+            ShellExecuteA(NULL, "open", readmePath, NULL, NULL, SW_SHOWNORMAL);
+            return FS_EXEC_OK;
+        }
+        return FS_EXEC_YOURSELF;
+    }
+
     if (strcmp(Verb, "properties") == 0) {
         /* Rewrite: remove file from all snapshots in this backup path */
         char originalPath[MAX_PATH], resticFilePath[MAX_PATH];
@@ -1661,7 +1736,7 @@ int __stdcall FsExecuteFile(HWND MainWin, char* RemoteName, char* Verb) {
             if (g_RequestProc) {
                 char buf[MAX_PATH] = {0};
                 g_RequestProc(g_PluginNr, RT_MsgOK, "Cache Cleared",
-                              "Snapshot cache cleared. Press Ctrl+R to refresh the listing.",
+                              "Snapshot cache cleared. Go back to see it.",
                               buf, MAX_PATH);
             }
             return FS_EXEC_OK;

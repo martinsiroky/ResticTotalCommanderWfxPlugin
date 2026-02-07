@@ -56,3 +56,11 @@ if (MINGW)
         -static-libgcc
     )
 endif()
+
+# Copy README.txt to build directory so the plugin can display it
+add_custom_command(TARGET restic_wfx POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/README.txt"
+        "$<TARGET_FILE_DIR:restic_wfx>/README.txt"
+    COMMENT "Copying README.txt to build directory"
+)

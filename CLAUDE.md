@@ -9,11 +9,23 @@ Total Commander WFX filesystem plugin for browsing restic backup repositories.
 - **Build system:** CMake with `MinGW Makefiles` generator
 - **Output:** `restic_wfx.wfx64` (64-bit TC plugin, ~1.5MB)
 - **Build commands:**
-  ```
+  ```bash
+  # Set PATH first (required for each shell session)
   export PATH="/c/Program Files/JetBrains/CLion 2025.3.2/bin/mingw/bin:$PATH"
+
+  # Configure (only needed once or after CMakeLists.txt changes)
   cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+
+  # Build
   cmake --build build
   ```
+
+  **Quick rebuild (single command):**
+  ```bash
+  export PATH="/c/Program Files/JetBrains/CLion 2025.3.2/bin/mingw/bin:$PATH" && cmake --build build
+  ```
+
+  **Note:** The PATH export is required before every build command. Without it, MinGW's gcc won't be found and compilation will fail silently.
 - **Linked libraries:** shlwapi, shell32, static libgcc
 
 ## Architecture

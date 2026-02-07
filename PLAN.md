@@ -171,10 +171,11 @@ Key functions: `Utf8ToAnsi()`, `AnsiToUtf8()`, `Utf8ToWide()` (in restic_process
 
 - [x] It is not needed to load content of each folder separately. When loading content of snapshot it returns also content of all subfolders. So when user open folder it is possible to load all and cache it. This will speed up browsing snapshots with many small files and folders.
 
-## In Progress: Phase 11 — Minor improvements and bug fixes
+## Implemented: Phase 11 — Minor improvements and bug fixes
 
 - [x] In case new repository is added with trailing slash or backslash, browsing is not working - remove in this case
-- [ ] Add some text file with instructions to the plugin folder (especially how to add repository, how to enter password or password file, remove file etc.)
+- [x] Add some text file with instructions to the plugin folder (especially how to add repository, how to enter password or password file, remove file etc.)
+  - `README.txt` with comprehensive instructions (installation, usage, troubleshooting)
 - [x] When removing file from all snapshots, just remove it from cache/db too, no need to clear whole cache/db for repository
   - `LsCache_InvalidateFile()` removes only entries matching the deleted file's parent path
   - In-memory cache entries for the parent path also cleared
@@ -182,7 +183,8 @@ Key functions: `Utf8ToAnsi()`, `AnsiToUtf8()`, `Utf8ToWide()` (in restic_process
   - `[Refresh snapshot list]` virtual entry in snapshot listing
   - Clicking it clears snapshot cache and prompts user to refresh (Ctrl+R)
 - [x] After snapshot is deleted outside the plugin by forget command (to retain only some daily snapshots, some monthly etc.), the plugin still shows the deleted snapshot. Remove orphan snapshots from db after loading snapshots from restic.
-- [ ] Add some info to go back after entering into [Refresh snapshot list] (the same way as it is after adding new repository)
+- [x] Add some info to go back after entering into [Refresh snapshot list] (the same way as it is after adding new repository)
+  - Shows hint entry "Snapshot cache cleared - go back to see it"
 
 ## Limits
 
