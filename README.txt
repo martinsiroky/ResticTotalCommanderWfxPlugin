@@ -3,6 +3,8 @@ restic-wfx - Total Commander Plugin for Restic Backups
 
 A Total Commander WFX filesystem plugin for browsing restic backup repositories.
 
+New versions and details on https://github.com/martinsiroky/ResticTotalCommanderWfxPlugin
+
 
 REQUIREMENTS
 ------------
@@ -15,7 +17,7 @@ REQUIREMENTS
 INSTALLATION
 ------------
 
-1. Copy restic_wfx.wfx64 to your Total Commander plugins directory
+1. Copy restic_wfx.wfx64 and README.txt to your Total Commander plugins directory
    (e.g., C:\Program Files\Total Commander\plugins\wfx\restic_wfx\)
 
 2. In Total Commander, go to Configuration > Options > Plugins > File System Plugins
