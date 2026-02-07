@@ -171,12 +171,18 @@ Key functions: `Utf8ToAnsi()`, `AnsiToUtf8()`, `Utf8ToWide()` (in restic_process
 
 - [x] It is not needed to load content of each folder separately. When loading content of snapshot it returns also content of all subfolders. So when user open folder it is possible to load all and cache it. This will speed up browsing snapshots with many small files and folders.
 
-## Planned: Phase 11 — Minor improvements and bug fixes
+## In Progress: Phase 11 — Minor improvements and bug fixes
 
-- [ ] In case new repository is added with trailing slash or backslash, browsing is not working - remove in this case
-- [ ] Add some text file with instructions to the plugin package (especially how to add repository, how to enter password or password file, remove file etc.)
-- [ ] When removing file from all snapshots, just remove it from cache/db too, no need to clear whole cache/db for repository. Just add possibility to force refresh folder or snapshot content from restic just in case.
-- [ ] After snapshot is deleted outside the plugin by forget command (to retain only some daily snapshots, some monthly etc.), the plugin still shows the deleted snapshot. Remove orphan snapshots from db after loading snapshots from restic.
+- [x] In case new repository is added with trailing slash or backslash, browsing is not working - remove in this case
+- [ ] Add some text file with instructions to the plugin folder (especially how to add repository, how to enter password or password file, remove file etc.)
+- [x] When removing file from all snapshots, just remove it from cache/db too, no need to clear whole cache/db for repository
+  - `LsCache_InvalidateFile()` removes only entries matching the deleted file's parent path
+  - In-memory cache entries for the parent path also cleared
+- [x] Add possibility to force refresh snapshot list from restic
+  - `[Refresh snapshot list]` virtual entry in snapshot listing
+  - Clicking it clears snapshot cache and prompts user to refresh (Ctrl+R)
+- [x] After snapshot is deleted outside the plugin by forget command (to retain only some daily snapshots, some monthly etc.), the plugin still shows the deleted snapshot. Remove orphan snapshots from db after loading snapshots from restic.
+- [ ] Add some info to go back after entering into [Refresh snapshot list] (the same way as it is after adding new repository)
 
 ## Limits
 
@@ -201,7 +207,7 @@ cmake --build build
 
 - **Build**: CMake 3.15+, MinGW-w64 (C11)
 - **Runtime**: restic.exe in PATH, Total Commander (64-bit for .wfx64)
-- **Bundled**: cJSON (vendor/), WFX SDK header (include/fsplugin.h)
+- **Bundled**: cJSON (vendor/), SQLite 3.47.2 (vendor/), WFX SDK header (include/fsplugin.h)
 - **Linked**: shlwapi, shell32, static libgcc (MinGW)
 
 ## Future Enhancements
@@ -210,5 +216,4 @@ cmake --build build
 - Search within snapshots
 - Restic backup creation from TC
 - Mount snapshots as drive letters (via restic mount)
-- Support for restic password files / key files
 - Windows DPAPI for encrypted password storage

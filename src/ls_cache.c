@@ -460,6 +460,49 @@ void LsCache_MarkSnapshotLoaded(const char* repoName, const char* shortId) {
     sqlite3_step(conn->stmtMarkLoaded);
 }
 
+void LsCache_InvalidateFile(const char* repoName, const char* filePath) {
+    DbConn* conn;
+    char parentPath[MAX_PATH];
+    const char* lastSlash;
+    sqlite3_stmt* stmt = NULL;
+
+    if (!g_Initialized) return;
+    conn = GetConnection(repoName);
+    if (!conn) return;
+
+    /* Extract parent directory from file path */
+    lastSlash = strrchr(filePath, '/');
+    if (!lastSlash) return;
+
+    {
+        int len = (int)(lastSlash - filePath);
+        if (len >= MAX_PATH) len = MAX_PATH - 1;
+        memcpy(parentPath, filePath, len);
+        parentPath[len] = '\0';
+    }
+
+    /* Delete from dir_entries where path = parentPath */
+    if (sqlite3_prepare_v2(conn->db,
+            "DELETE FROM dir_entries WHERE path = ?1",
+            -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, parentPath, -1, SQLITE_STATIC);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    /* Delete from cached_dirs where path = parentPath */
+    if (sqlite3_prepare_v2(conn->db,
+            "DELETE FROM cached_dirs WHERE path = ?1",
+            -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, parentPath, -1, SQLITE_STATIC);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    /* Also clear snapshot_loaded since directory structure changed */
+    sqlite3_exec(conn->db, "DELETE FROM snapshot_loaded", NULL, NULL, NULL);
+}
+
 void LsCache_DeleteRepo(const char* repoName) {
     int i;
     char dbPath[MAX_PATH];

@@ -25,6 +25,10 @@ int LsCache_Purge(const char* repoName, const char** validShortIds, int validCou
 /* Delete the entire database for a repository. */
 void LsCache_DeleteRepo(const char* repoName);
 
+/* Invalidate cached entries for a specific file path across all snapshots.
+   Deletes dir_entries and cached_dirs where the parent path matches. */
+void LsCache_InvalidateFile(const char* repoName, const char* filePath);
+
 /* Check if a snapshot has been fully loaded (bulk-cached). */
 BOOL LsCache_IsSnapshotLoaded(const char* repoName, const char* shortId);
 

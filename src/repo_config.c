@@ -136,6 +136,14 @@ BOOL RepoStore_PromptAdd(int pluginNr, tRequestProc requestProc) {
     }
     if (repoPath[0] == '\0') return FALSE;
 
+    /* Trim trailing slashes/backslashes from repo path */
+    {
+        int len = (int)strlen(repoPath);
+        while (len > 0 && (repoPath[len - 1] == '\\' || repoPath[len - 1] == '/')) {
+            repoPath[--len] = '\0';
+        }
+    }
+
     /* Ask for display name */
     if (!requestProc(pluginNr, RT_Other, "Repository Name",
                      "Enter a display name:", repoName, MAX_REPO_NAME)) {

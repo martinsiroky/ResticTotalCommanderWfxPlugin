@@ -29,7 +29,7 @@ Total Commander WFX filesystem plugin for browsing restic backup repositories.
 | `json_parse.c` | JSON parsing for restic output (snapshots, ls, find) |
 | `repo_config.c` | Repository config persistence via INI file |
 | `ls_cache.c` | Persistent directory listing cache via SQLite |
-| `ls_cache.h` | Public API: Init, Lookup, Store, Purge, DeleteRepo, Shutdown |
+| `ls_cache.h` | Public API: Init, Lookup, Store, Purge, DeleteRepo, InvalidateFile, Shutdown |
 
 ### Vendor libraries (`vendor/`)
 
@@ -48,7 +48,7 @@ Total Commander WFX filesystem plugin for browsing restic backup repositories.
 ```
 \                                    → list repos + [Add Repository]
 \RepoName                            → list backup paths (sanitized)
-\RepoName\PathName                   → list snapshots + [All Files]
+\RepoName\PathName                   → list snapshots + [All Files] + [Refresh snapshot list]
 \RepoName\PathName\SnapshotDisplay   → directory listing from restic ls
 \RepoName\PathName\[All Files]       → merged view across all snapshots
 \RepoName\PathName\[All Files]\[v] file.txt → version listing via restic find
@@ -63,6 +63,7 @@ Total Commander WFX filesystem plugin for browsing restic backup repositories.
    - Keyed on `(short_id, path)`
    - Lookup flow: in-memory -> SQLite -> restic CLI
    - Purged when FetchSnapshots() refreshes (removes deleted snapshot entries)
+   - `InvalidateFile()` for targeted invalidation after file removal
    - WAL journal mode for crash safety
 
 ### Batch restore optimization

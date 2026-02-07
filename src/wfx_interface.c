@@ -377,6 +377,7 @@ static DirEntry* GetSnapshotsForPath(RepoConfig* repo, const char* sanitizedPath
         FILETIME ftNow;
         GetSystemTimeAsFileTime(&ftNow);
         AddEntry(&entries, &count, &capacity, ALL_FILES_ENTRY, TRUE, 0, 0, ftNow);
+        AddEntry(&entries, &count, &capacity, "[Refresh snapshot list]", TRUE, 0, 0, ftNow);
     }
 
     for (i = 0; i < numSnaps; i++) {
@@ -1083,7 +1084,13 @@ DirEntry* GetEntriesForPath(const char* path, int* outCount) {
     else if (numSegs == 3) {
         RepoConfig* repo = RepoStore_FindByName(seg1);
         if (repo && RepoStore_EnsurePassword(repo, g_PluginNr, g_RequestProc)) {
-            if (IsAllFilesPath(seg3)) {
+            if (strcmp(seg3, "[Refresh snapshot list]") == 0) {
+                /* Invalidate cache - return empty so user goes back up to see refreshed list */
+                InvalidateSnapshotCache(repo->name);
+                entries = NULL;
+                count = 0;
+            }
+            else if (IsAllFilesPath(seg3)) {
                 const char* vComp = FindVersionComponent(rest);
                 if (vComp) {
                     char pathBefore[MAX_PATH], vFileName[MAX_PATH], afterV[MAX_PATH];
@@ -1600,7 +1607,35 @@ int __stdcall FsExecuteFile(HWND MainWin, char* RemoteName, char* Verb) {
 
         /* Invalidate caches since snapshot data changed */
         InvalidateSnapshotCache(repo->name);
-        LsCache_DeleteRepo(repo->name);
+        LsCache_InvalidateFile(repo->name, resticFilePath);
+
+        /* Clear matching entries from in-memory cache */
+        {
+            char parentPath[MAX_PATH];
+            const char* lastSlash = strrchr(resticFilePath, '/');
+            if (lastSlash) {
+                int len = (int)(lastSlash - resticFilePath);
+                int i;
+                if (len >= MAX_PATH) len = MAX_PATH - 1;
+                memcpy(parentPath, resticFilePath, len);
+                parentPath[len] = '\0';
+
+                /* Remove all in-memory cache entries matching this parent path */
+                i = 0;
+                while (i < g_LsCacheCount) {
+                    if (strcmp(g_LsCache[i].path, parentPath) == 0) {
+                        free(g_LsCache[i].entries);
+                        g_LsCacheCount--;
+                        if (i < g_LsCacheCount) {
+                            memmove(&g_LsCache[i], &g_LsCache[i + 1],
+                                    sizeof(LsCacheEntry) * (g_LsCacheCount - i));
+                        }
+                    } else {
+                        i++;
+                    }
+                }
+            }
+        }
 
         g_RequestProc(g_PluginNr, RT_MsgOK, "Rewrite Complete",
                       "File removed from snapshots. Run 'restic prune' to reclaim space.",
@@ -1611,6 +1646,27 @@ int __stdcall FsExecuteFile(HWND MainWin, char* RemoteName, char* Verb) {
     /* Only handle "open" verb */
     if (strcmp(Verb, "open") != 0)
         return FS_EXEC_YOURSELF;
+
+    /* Handle [Refresh snapshot list] click */
+    {
+        char seg1[MAX_REPO_NAME], seg2[MAX_PATH], seg3[MAX_PATH], rest[MAX_PATH];
+        int numSegs = ParsePathSegments(RemoteName, seg1, seg2, seg3, rest);
+
+        if (numSegs == 3 && strcmp(seg3, "[Refresh snapshot list]") == 0) {
+            RepoConfig* repo = RepoStore_FindByName(seg1);
+            if (repo) {
+                InvalidateSnapshotCache(repo->name);
+            }
+            /* Show message and let user refresh manually */
+            if (g_RequestProc) {
+                char buf[MAX_PATH] = {0};
+                g_RequestProc(g_PluginNr, RT_MsgOK, "Cache Cleared",
+                              "Snapshot cache cleared. Press Ctrl+R to refresh the listing.",
+                              buf, MAX_PATH);
+            }
+            return FS_EXEC_OK;
+        }
+    }
 
     /* Check if this is a file (ResolveRemotePath requires non-empty rest) */
     if (!ResolveRemotePath(RemoteName, &resolved))
