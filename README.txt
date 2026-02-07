@@ -129,4 +129,18 @@ Cache issues:
 LICENSE
 -------
 
-This plugin is provided as-is for personal use with Total Commander.
+This software is licensed under the MIT License.
+See LICENSE.txt for the full license text.
+
+
+THIRD-PARTY COMPONENTS
+----------------------
+
+This plugin uses the following third-party libraries:
+
+- cJSON (https://github.com/DaveGamble/cJSON)
+  Copyright (c) 2009-2017 Dave Gamble and cJSON contributors
+  Licensed under the MIT License
+
+- SQLite (https://www.sqlite.org/)
+  Public domain - no license required

@@ -1,3 +1,9 @@
+/*
+ * restic-wfx - Total Commander plugin for browsing restic backup repositories
+ * Copyright (c) 2026 Martin Široký
+ * SPDX-License-Identifier: MIT
+ */
+
 #include <windows.h>
 
 /* Global module handle for finding the DLL's directory */

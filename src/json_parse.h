@@ -1,3 +1,9 @@
+/*
+ * restic-wfx - Total Commander plugin for browsing restic backup repositories
+ * Copyright (c) 2026 Martin Široký
+ * SPDX-License-Identifier: MIT
+ */
+
 #ifndef JSON_PARSE_H
 #define JSON_PARSE_H
 

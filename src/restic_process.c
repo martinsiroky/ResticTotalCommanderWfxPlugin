@@ -1,3 +1,9 @@
+/*
+ * restic-wfx - Total Commander plugin for browsing restic backup repositories
+ * Copyright (c) 2026 Martin Široký
+ * SPDX-License-Identifier: MIT
+ */
+
 #include "restic_process.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -368,18 +374,6 @@ BOOL RunResticRestore(const char* repoPath, const char* password,
              "restic -r \"%s\" restore %s --path \"%s\" --include \"%s\" --target \"%s\"",
              repoPathUtf8, snapshotId, snapshotPath, includePath, targetDir);
 
-    /* DEBUG: log the command line to temp file */
-    {
-        char debugPath[MAX_PATH];
-        GetTempPathA(MAX_PATH, debugPath);
-        strcat(debugPath, "restic_wfx_debug.log");
-        FILE* dbg = fopen(debugPath, "a");
-        if (dbg) {
-            fprintf(dbg, "CMD: %s\n", cmdLine);
-            fclose(dbg);
-        }
-    }
-
     /* Set RESTIC_PASSWORD environment variable */
     SetEnvironmentVariableA("RESTIC_PASSWORD", password);
 
@@ -409,18 +403,6 @@ BOOL RunResticRestore(const char* repoPath, const char* password,
 
     if (exitCode) {
         GetExitCodeProcess(pi.hProcess, exitCode);
-    }
-
-    /* DEBUG: log exit code */
-    {
-        char debugPath[MAX_PATH];
-        GetTempPathA(MAX_PATH, debugPath);
-        strcat(debugPath, "restic_wfx_debug.log");
-        FILE* dbg = fopen(debugPath, "a");
-        if (dbg) {
-            fprintf(dbg, "EXIT: %lu\n", exitCode ? *exitCode : 0xFFFFFFFF);
-            fclose(dbg);
-        }
     }
 
     CloseHandle(pi.hProcess);
@@ -465,18 +447,6 @@ BOOL RunResticRewrite(const char* repoPath, const char* password,
              "restic -r \"%s\" rewrite --exclude \"%s\" --path \"%s\" --forget",
              repoPathUtf8, excludePath, snapshotPath);
 
-    /* DEBUG: log the command line to temp file */
-    {
-        char debugPath[MAX_PATH];
-        GetTempPathA(MAX_PATH, debugPath);
-        strcat(debugPath, "restic_wfx_debug.log");
-        FILE* dbg = fopen(debugPath, "a");
-        if (dbg) {
-            fprintf(dbg, "REWRITE CMD: %s\n", cmdLine);
-            fclose(dbg);
-        }
-    }
-
     /* Set RESTIC_PASSWORD environment variable */
     SetEnvironmentVariableA("RESTIC_PASSWORD", password);
 
@@ -506,18 +476,6 @@ BOOL RunResticRewrite(const char* repoPath, const char* password,
 
     if (exitCode) {
         GetExitCodeProcess(pi.hProcess, exitCode);
-    }
-
-    /* DEBUG: log exit code */
-    {
-        char debugPath[MAX_PATH];
-        GetTempPathA(MAX_PATH, debugPath);
-        strcat(debugPath, "restic_wfx_debug.log");
-        FILE* dbg = fopen(debugPath, "a");
-        if (dbg) {
-            fprintf(dbg, "REWRITE EXIT: %lu\n", exitCode ? *exitCode : 0xFFFFFFFF);
-            fclose(dbg);
-        }
     }
 
     CloseHandle(pi.hProcess);

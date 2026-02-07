@@ -1,3 +1,9 @@
+/*
+ * restic-wfx - Total Commander plugin for browsing restic backup repositories
+ * Copyright (c) 2026 Martin Široký
+ * SPDX-License-Identifier: MIT
+ */
+
 #ifndef WFX_INTERFACE_H
 #define WFX_INTERFACE_H
 

@@ -1,3 +1,9 @@
+/*
+ * restic-wfx - Total Commander plugin for browsing restic backup repositories
+ * Copyright (c) 2026 Martin Široký
+ * SPDX-License-Identifier: MIT
+ */
+
 #include "wfx_interface.h"
 #include "repo_config.h"
 #include "restic_process.h"
@@ -8,9 +14,44 @@
 #include <stdio.h>
 #include <shellapi.h>
 #include <shlwapi.h>
+#include <wincrypt.h>
 
 /* Module handle from plugin_main.c for finding DLL directory */
 extern HMODULE g_hModule;
+
+/* Generate a cryptographically secure random 32-bit value for temp dir names.
+   Falls back to combining multiple entropy sources if CryptGenRandom fails. */
+static DWORD GetSecureRandomValue(void) {
+    DWORD randomValue = 0;
+    HCRYPTPROV hProv;
+
+    if (CryptAcquireContextA(&hProv, NULL, NULL, PROV_RSA_FULL,
+                              CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
+        CryptGenRandom(hProv, sizeof(randomValue), (BYTE*)&randomValue);
+        CryptReleaseContext(hProv, 0);
+        return randomValue;
+    }
+
+    /* Fallback: combine multiple entropy sources */
+    {
+        LARGE_INTEGER perfCounter;
+        FILETIME ft;
+        DWORD pid = GetCurrentProcessId();
+        DWORD tid = GetCurrentThreadId();
+
+        QueryPerformanceCounter(&perfCounter);
+        GetSystemTimeAsFileTime(&ft);
+
+        randomValue = (DWORD)perfCounter.LowPart;
+        randomValue ^= (DWORD)perfCounter.HighPart;
+        randomValue ^= ft.dwLowDateTime;
+        randomValue ^= ft.dwHighDateTime;
+        randomValue ^= pid;
+        randomValue ^= tid << 16;
+        randomValue ^= GetTickCount();
+    }
+    return randomValue;
+}
 
 /* [All Files] virtual snapshot constants */
 #define ALL_FILES_ENTRY    "[All Files]"
@@ -24,13 +65,8 @@ static BOOL GetReadmePath(char* outPath, size_t maxLen) {
     char* lastSlash;
 
     if (!GetModuleFileNameA(g_hModule, dllPath, MAX_PATH)) {
-        OutputDebugStringA("restic_wfx: GetModuleFileNameA failed\n");
         return FALSE;
     }
-
-    OutputDebugStringA("restic_wfx: DLL path: ");
-    OutputDebugStringA(dllPath);
-    OutputDebugStringA("\n");
 
     lastSlash = strrchr(dllPath, '\\');
     if (!lastSlash) return FALSE;
@@ -38,17 +74,7 @@ static BOOL GetReadmePath(char* outPath, size_t maxLen) {
     *lastSlash = '\0';
     snprintf(outPath, maxLen, "%s\\README.txt", dllPath);
 
-    OutputDebugStringA("restic_wfx: Looking for README at: ");
-    OutputDebugStringA(outPath);
-    OutputDebugStringA("\n");
-
-    if (GetFileAttributesA(outPath) != INVALID_FILE_ATTRIBUTES) {
-        OutputDebugStringA("restic_wfx: README.txt found!\n");
-        return TRUE;
-    } else {
-        OutputDebugStringA("restic_wfx: README.txt NOT found\n");
-        return FALSE;
-    }
+    return (GetFileAttributesA(outPath) != INVALID_FILE_ATTRIBUTES);
 }
 
 /* Global plugin state */
@@ -1546,19 +1572,6 @@ int __stdcall FsGetFile(char* RemoteName, char* LocalName, int CopyFlags,
                                  includePath, g_BatchRestore.tempDir,
                                  &batchExitCode);
 
-            /* DEBUG: log restore result */
-            {
-                char debugPath[MAX_PATH];
-                GetTempPathA(MAX_PATH, debugPath);
-                strcat(debugPath, "restic_wfx_debug.log");
-                FILE* dbg = fopen(debugPath, "a");
-                if (dbg) {
-                    fprintf(dbg, "DEFERRED: restoreOk=%d exitCode=%lu include=[%s] target=[%s]\n",
-                            restoreOk, batchExitCode, includePath, g_BatchRestore.tempDir);
-                    fclose(dbg);
-                }
-            }
-
             if (restoreOk && batchExitCode == 0) {
                 g_BatchRestore.active = TRUE;
             }
@@ -1891,8 +1904,8 @@ void __stdcall FsStatusInfo(char* RemoteName, int InfoStartEnd, int InfoOperatio
             PathAppendA(tempDir, "restic_wfx");
             CreateDirectoryA(tempDir, NULL);
 
-            snprintf(restoreSub, MAX_PATH, "%s\\restore_%s_%u",
-                     tempDir, shortId, (unsigned)GetTickCount());
+            snprintf(restoreSub, MAX_PATH, "%s\\restore_%s_%08X",
+                     tempDir, shortId, GetSecureRandomValue());
             CreateDirectoryA(restoreSub, NULL);
 
             /* Defer actual restore to first FsGetFile — we don't know

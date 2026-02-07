@@ -1,3 +1,9 @@
+/*
+ * restic-wfx - Total Commander plugin for browsing restic backup repositories
+ * Copyright (c) 2026 Martin Široký
+ * SPDX-License-Identifier: MIT
+ */
+
 #include "ls_cache.h"
 #include "json_parse.h"  /* For AnsiToUtf8, Utf8ToAnsi */
 #include "sqlite3.h"
