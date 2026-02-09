@@ -5,28 +5,50 @@ Total Commander WFX filesystem plugin for browsing restic backup repositories.
 ## Build
 
 - **Language:** C11
-- **Toolchain:** MinGW GCC (bundled with CLion at `C:\Program Files\JetBrains\CLion 2025.3.2\bin\mingw\bin`)
+- **Toolchain:** MinGW GCC
 - **Build system:** CMake with `MinGW Makefiles` generator
-- **Output:** `restic_wfx.wfx64` (64-bit TC plugin, ~1.5MB)
-- **Build commands:**
-  ```bash
-  # Set PATH first (required for each shell session)
-  export PATH="/c/Program Files/JetBrains/CLion 2025.3.2/bin/mingw/bin:$PATH"
-
-  # Configure (only needed once or after CMakeLists.txt changes)
-  cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
-
-  # Build
-  cmake --build build
-  ```
-
-  **Quick rebuild (single command):**
-  ```bash
-  export PATH="/c/Program Files/JetBrains/CLion 2025.3.2/bin/mingw/bin:$PATH" && cmake --build build
-  ```
-
-  **Note:** The PATH export is required before every build command. Without it, MinGW's gcc won't be found and compilation will fail silently.
+- **Output:** `restic_wfx.wfx64` (64-bit) or `restic_wfx.wfx` (32-bit), ~1.5MB
 - **Linked libraries:** shlwapi, shell32, static libgcc
+- **Version:** Defined in `CMakeLists.txt` (`RESTIC_WFX_VERSION`)
+
+### Release Build (recommended)
+
+Run `build_release.bat` to build both 32-bit and 64-bit plugins and create a release zip:
+
+```cmd
+build_release.bat
+```
+
+Output: `release/restic_wfx_<version>.zip` containing both plugins and README.txt.
+
+**Prerequisites:** Install MSYS2 toolchains (or have CLion installed for 64-bit fallback):
+
+```bash
+# In MSYS2 terminal
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-make   # 64-bit
+pacman -S mingw-w64-i686-gcc mingw-w64-i686-make       # 32-bit
+```
+
+### Manual Build
+
+**64-bit** (using CLion's bundled MinGW):
+```bash
+export PATH="/c/Program Files/JetBrains/CLion 2025.3.2/bin/mingw/bin:$PATH"
+cmake -B build64 -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+cmake --build build64
+```
+
+**32-bit** (using MSYS2):
+```bash
+export PATH="/c/msys64/mingw32/bin:$PATH"
+cmake -B build32 -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+cmake --build build32
+```
+
+### Notes
+
+- Use separate build directories (`build32`/`build64`) to avoid CMake cache conflicts
+- CMake auto-detects architecture from the compiler and sets the correct suffix
 
 ## Architecture
 

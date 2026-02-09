@@ -186,6 +186,10 @@ Key functions: `Utf8ToAnsi()`, `AnsiToUtf8()`, `Utf8ToWide()` (in restic_process
 - [x] Add some info to go back after entering into [Refresh snapshot list] (the same way as it is after adding new repository)
   - Shows hint entry "Snapshot cache cleared - go back to see it"
 
+## Plan: Phase 12 - Remove the whole snapshot
+
+
+
 ## Limits
 
 | Constant | Value |

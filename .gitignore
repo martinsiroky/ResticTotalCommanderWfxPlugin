@@ -7,3 +7,5 @@ compile.log
 compile_commands.json
 nul
 test.c
+/build32
+/build64

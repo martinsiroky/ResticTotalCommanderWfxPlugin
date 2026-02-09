@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(restic-wfx LANGUAGES C)
 
-set(RESTIC_WFX_VERSION "1.0")
+set(RESTIC_WFX_VERSION "1.0.1")
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -33,10 +33,24 @@ target_include_directories(restic_wfx PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor
 )
 
-# Output as .wfx64 for 64-bit Total Commander (.wfx is for 32-bit plugins)
+# Detect architecture and set appropriate extension
+# .wfx64 for 64-bit Total Commander, .wfx for 32-bit
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(WFX_SUFFIX ".wfx64")
+    message(STATUS "Building 64-bit plugin")
+else()
+    set(WFX_SUFFIX ".wfx")
+    message(STATUS "Building 32-bit plugin")
+endif()
+
 set_target_properties(restic_wfx PROPERTIES
-    SUFFIX ".wfx64"
+    SUFFIX "${WFX_SUFFIX}"
     PREFIX ""
+)
+
+# Suppress spurious GCC warning in vendored SQLite code
+set_source_files_properties(vendor/sqlite3.c PROPERTIES
+    COMPILE_OPTIONS "$<$<C_COMPILER_ID:GNU>:-Wno-stringop-overread>"
 )
 
 target_compile_definitions(restic_wfx PRIVATE
