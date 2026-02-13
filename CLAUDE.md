@@ -49,6 +49,10 @@ cmake --build build32
 
 - Use separate build directories (`build32`/`build64`) to avoid CMake cache conflicts
 - CMake auto-detects architecture from the compiler and sets the correct suffix
+- If incremental build fails with cryptic errors, delete the build directory and rebuild from scratch:
+  ```bash
+  rm -rf build64 && cmake -B build64 -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release && cmake --build build64
+  ```
 
 ## Architecture
 

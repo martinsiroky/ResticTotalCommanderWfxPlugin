@@ -610,6 +610,27 @@ static void SplitAtVersionComponent(const char* rest, char* pathBefore, char* vF
    e.g. "d:\Fotky\Mix" -> "/d/Fotky/Mix"
         "C:\Users"      -> "/C/Users"
    If the path doesn't start with a drive letter, just normalize slashes. */
+/* Collapse consecutive forward slashes in-place: "//a///b" -> "/a/b" */
+static void CollapseSlashes(char* path) {
+    char* src = path;
+    char* dst = path;
+    BOOL lastWasSlash = FALSE;
+
+    while (*src) {
+        if (*src == '/') {
+            if (!lastWasSlash) {
+                *dst++ = *src;
+            }
+            lastWasSlash = TRUE;
+        } else {
+            *dst++ = *src;
+            lastWasSlash = FALSE;
+        }
+        src++;
+    }
+    *dst = '\0';
+}
+
 static void ToResticInternalPath(const char* winPath, char* outPath, int maxLen) {
     /* Check for drive letter pattern: "X:" or "X:\" */
     if (winPath[0] != '\0' && winPath[1] == ':' &&
@@ -621,6 +642,15 @@ static void ToResticInternalPath(const char* winPath, char* outPath, int maxLen)
         outPath[maxLen - 1] = '\0';
     }
     BackslashToForwardSlash(outPath);
+    CollapseSlashes(outPath);
+
+    /* Remove trailing slash (except for root "/") */
+    {
+        size_t len = strlen(outPath);
+        if (len > 1 && outPath[len - 1] == '/') {
+            outPath[len - 1] = '\0';
+        }
+    }
 }
 
 /* Build the restic ls subpath from original backup path + TC subpath remainder.
@@ -1032,9 +1062,20 @@ static DirEntry* GetFileVersions(RepoConfig* repo, const char* sanitizedPath,
     BuildLsSubpath(originalPath, filePath, resticPath, MAX_PATH);
     AnsiToUtf8(resticPath, resticPathUtf8, MAX_PATH);
 
-    /* Build the --path filter using the original backup path (as stored in snapshot) */
+    /* Build the --path filter using the original backup path.
+       For drive-root paths like "P:\", we need to escape the trailing backslash
+       as "\\" to prevent it from escaping the closing quote in the command. */
     char originalPathUtf8[MAX_PATH];
     AnsiToUtf8(originalPath, originalPathUtf8, MAX_PATH);
+    {
+        int len = (int)strlen(originalPathUtf8);
+        /* Double the trailing backslash for drive-root paths (e.g., "P:\" -> "P:\\") */
+        if (len == 3 && originalPathUtf8[1] == ':' &&
+            originalPathUtf8[2] == '\\' && len + 1 < MAX_PATH) {
+            originalPathUtf8[3] = '\\';
+            originalPathUtf8[4] = '\0';
+        }
+    }
 
     /* Run restic find */
     snprintf(args, sizeof(args), "find --json --path \"%s\" \"%s\"",

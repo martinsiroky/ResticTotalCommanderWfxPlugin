@@ -12,6 +12,11 @@ set "BUILD64_DIR=!PROJECT_DIR!\build64"
 set "BUILD32_DIR=!PROJECT_DIR!\build32"
 set "RELEASE_DIR=!PROJECT_DIR!\release"
 
+:: delete BUILD32_DIR:
+if exist "!BUILD32_DIR!" rmdir /s /q "!BUILD32_DIR!"
+:: delete BUILD64_DIR:
+if exist "!BUILD64_DIR!" rmdir /s /q "!BUILD64_DIR!"
+
 :: Extract version from CMakeLists.txt (single source of truth)
 set "VERSION="
 for /f "usebackq tokens=1,2 delims=()" %%a in ("!PROJECT_DIR!\CMakeLists.txt") do (

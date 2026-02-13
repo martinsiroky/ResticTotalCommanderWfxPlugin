@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(restic-wfx LANGUAGES C)
 
-set(RESTIC_WFX_VERSION "1.0.1")
+set(RESTIC_WFX_VERSION "1.0.2")
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
