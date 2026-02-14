@@ -429,23 +429,28 @@ static DirEntry* GetSnapshotsForPath(RepoConfig* repo, const char* sanitizedPath
     ResticSnapshot* snapshots = NULL;
     int numSnaps, i, j;
 
+    /* Arrays to track matching snapshots */
+    int* matchingIndices = NULL;
+    int matchingCount = 0;
+    int cachedCount = 0;
+
     numSnaps = FetchSnapshots(repo, &snapshots);
     if (numSnaps == 0) {
         *outCount = 0;
         return NULL;
     }
 
-    /* Insert [All Files] virtual entry at the top */
-    {
-        FILETIME ftNow;
-        GetSystemTimeAsFileTime(&ftNow);
-        AddEntry(&entries, &count, &capacity, ALL_FILES_ENTRY, TRUE, 0, 0, ftNow);
-        AddEntry(&entries, &count, &capacity, "[Refresh snapshot list]", TRUE, 0, 0, ftNow);
+    /* Allocate array for matching indices */
+    matchingIndices = malloc(numSnaps * sizeof(int));
+    if (!matchingIndices) {
+        free(snapshots);
+        *outCount = 0;
+        return NULL;
     }
 
+    /* First pass - identify matching snapshots and count cached */
     for (i = 0; i < numSnaps; i++) {
         BOOL matches = FALSE;
-
         for (j = 0; j < snapshots[i].pathCount; j++) {
             char sanitized[MAX_PATH];
             SanitizePath(snapshots[i].paths[j], sanitized, MAX_PATH);
@@ -454,20 +459,49 @@ static DirEntry* GetSnapshotsForPath(RepoConfig* repo, const char* sanitizedPath
                 break;
             }
         }
-
         if (matches) {
-            char displayName[MAX_PATH];
-            int yr = 0, mo = 0, dy = 0, hr = 0, mn = 0, sc = 0;
-
-            sscanf(snapshots[i].time, "%d-%d-%dT%d:%d:%d", &yr, &mo, &dy, &hr, &mn, &sc);
-            snprintf(displayName, sizeof(displayName), "%04d-%02d-%02d %02d-%02d-%02d (%s)",
-                     yr, mo, dy, hr, mn, sc, snapshots[i].shortId);
-
-            FILETIME ft = ParseISOTime(snapshots[i].time);
-            AddEntry(&entries, &count, &capacity, displayName, TRUE, 0, 0, ft);
+            matchingIndices[matchingCount++] = i;
+            if (LsCache_IsSnapshotLoaded(repo->name, snapshots[i].shortId)) {
+                cachedCount++;
+            }
         }
     }
 
+    /* Insert [All Files] virtual entry with cache status */
+    {
+        FILETIME ftNow;
+        char allFilesEntry[MAX_PATH];
+
+        GetSystemTimeAsFileTime(&ftNow);
+
+        snprintf(allFilesEntry, sizeof(allFilesEntry),
+                     "%s      [cached %d of %d snapshots]",
+                     ALL_FILES_ENTRY, cachedCount, matchingCount);
+
+        AddEntry(&entries, &count, &capacity, allFilesEntry, TRUE, 0, 0, ftNow);
+        AddEntry(&entries, &count, &capacity, "[Refresh snapshot list]", TRUE, 0, 0, ftNow);
+    }
+
+    /* Second pass - add snapshot entries with [cached] suffix where applicable */
+    for (i = 0; i < matchingCount; i++) {
+        int idx = matchingIndices[i];
+        char displayName[MAX_PATH];
+        int yr = 0, mo = 0, dy = 0, hr = 0, mn = 0, sc = 0;
+
+        sscanf(snapshots[idx].time, "%d-%d-%dT%d:%d:%d", &yr, &mo, &dy, &hr, &mn, &sc);
+        snprintf(displayName, sizeof(displayName), "%04d-%02d-%02d %02d-%02d-%02d (%s)",
+                 yr, mo, dy, hr, mn, sc, snapshots[idx].shortId);
+
+        /* Append [cached] if snapshot is loaded */
+        if (LsCache_IsSnapshotLoaded(repo->name, snapshots[idx].shortId)) {
+            strncat(displayName, "      [cached]", sizeof(displayName) - strlen(displayName) - 1);
+        }
+
+        FILETIME ft = ParseISOTime(snapshots[idx].time);
+        AddEntry(&entries, &count, &capacity, displayName, TRUE, 0, 0, ft);
+    }
+
+    free(matchingIndices);
     free(snapshots);
     *outCount = count;
     return entries;
@@ -523,9 +557,10 @@ static void BackslashToForwardSlash(char* path) {
     }
 }
 
-/* Check if a segment is the [All Files] virtual entry. */
+/* Check if a segment is the [All Files] virtual entry.
+   Uses prefix match to handle cache status suffix like "[All Files] [cached 5 of 9 snapshots]". */
 static BOOL IsAllFilesPath(const char* seg) {
-    return (strcmp(seg, ALL_FILES_ENTRY) == 0);
+    return (strncmp(seg, ALL_FILES_ENTRY, strlen(ALL_FILES_ENTRY)) == 0);
 }
 
 /* Check if a name starts with the version prefix "[v] ". */
