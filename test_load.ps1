@@ -9,7 +9,7 @@ public class DllTest {
 }
 "@
 
-$searchDir = "D:\Martin\Programming\CPP\Total Commander Restric Plugin"
+$searchDir = "D:\Martin\Programming\CPP\Total Commander Restic Plugin"
 $wfxFiles = Get-ChildItem $searchDir -Recurse -Filter "*.wfx" -ErrorAction SilentlyContinue
 
 if ($wfxFiles.Count -eq 0) {

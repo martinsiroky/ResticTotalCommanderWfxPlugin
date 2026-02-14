@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <shlobj.h>
 
 /* Convert a UTF-8 string to a malloc'd wide string. Caller must free. */
 static WCHAR* Utf8ToWide(const char* utf8) {
@@ -18,6 +20,59 @@ static WCHAR* Utf8ToWide(const char* utf8) {
         MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wbuf, wlen);
     }
     return wbuf;
+}
+
+/* Command logging infrastructure */
+static char g_LogFilePath[MAX_PATH] = {0};
+static BOOL g_LogInitialized = FALSE;
+
+/* Build log file path: %APPDATA%\GHISLER\plugins\wfx\restic_wfx\restic_commands.log */
+static void EnsureLogPath(void) {
+    char appData[MAX_PATH];
+    char dir[MAX_PATH];
+
+    if (g_LogInitialized) return;
+
+    if (FAILED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appData))) {
+        g_LogFilePath[0] = '\0';
+        g_LogInitialized = TRUE;
+        return;
+    }
+
+    /* Create intermediate directories */
+    snprintf(dir, MAX_PATH, "%s\\GHISLER", appData);
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir, MAX_PATH, "%s\\GHISLER\\plugins", appData);
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir, MAX_PATH, "%s\\GHISLER\\plugins\\wfx", appData);
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir, MAX_PATH, "%s\\GHISLER\\plugins\\wfx\\restic_wfx", appData);
+    CreateDirectoryA(dir, NULL);
+
+    snprintf(g_LogFilePath, MAX_PATH,
+             "%s\\GHISLER\\plugins\\wfx\\restic_wfx\\restic_commands.log", appData);
+    g_LogInitialized = TRUE;
+}
+
+/* Log a restic command with timestamp. Appends to log file. */
+static void LogResticCommand(const char* cmdLine) {
+    FILE* f;
+    time_t now;
+    struct tm* tm_info;
+    char timestamp[32];
+
+    EnsureLogPath();
+    if (g_LogFilePath[0] == '\0') return;
+
+    f = fopen(g_LogFilePath, "a");
+    if (!f) return;
+
+    time(&now);
+    tm_info = localtime(&now);
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    fprintf(f, "[%s] %s\n", timestamp, cmdLine);
+    fclose(f);
 }
 
 char* RunResticWithProgress(const char* repoPath, const char* password,
@@ -59,6 +114,7 @@ char* RunResticWithProgress(const char* repoPath, const char* password,
 
     /* Build command line (fully UTF-8, will be converted to wide) */
     snprintf(cmdLine, sizeof(cmdLine), "restic -r \"%s\" %s", repoPathUtf8, args);
+    LogResticCommand(cmdLine);
 
     /* Create pipe for stdout capture */
     memset(&sa, 0, sizeof(sa));
@@ -228,6 +284,7 @@ BOOL RunResticDump(const char* repoPath, const char* password,
     /* Build command line (fully UTF-8, will be converted to wide) */
     snprintf(cmdLine, sizeof(cmdLine),
              "restic -r \"%s\" dump %s \"%s\"", repoPathUtf8, snapshotId, filePath);
+    LogResticCommand(cmdLine);
 
     /* Create pipe for stdout capture */
     memset(&sa, 0, sizeof(sa));
@@ -373,6 +430,7 @@ BOOL RunResticRestore(const char* repoPath, const char* password,
     snprintf(cmdLine, sizeof(cmdLine),
              "restic -r \"%s\" restore %s --path \"%s\" --include \"%s\" --target \"%s\"",
              repoPathUtf8, snapshotId, snapshotPath, includePath, targetDir);
+    LogResticCommand(cmdLine);
 
     /* Set RESTIC_PASSWORD environment variable */
     SetEnvironmentVariableA("RESTIC_PASSWORD", password);
@@ -446,6 +504,7 @@ BOOL RunResticRewrite(const char* repoPath, const char* password,
     snprintf(cmdLine, sizeof(cmdLine),
              "restic -r \"%s\" rewrite --exclude \"%s\" --path \"%s\" --forget",
              repoPathUtf8, excludePath, snapshotPath);
+    LogResticCommand(cmdLine);
 
     /* Set RESTIC_PASSWORD environment variable */
     SetEnvironmentVariableA("RESTIC_PASSWORD", password);

@@ -1613,7 +1613,6 @@ int __stdcall FsGetFile(char* RemoteName, char* LocalName, int CopyFlags,
     /* Deferred batch restore: on first FsGetFile, derive the --include path
        from the actual file path and run restic restore now */
     if (g_BatchRestore.pending && !g_BatchRestore.active) {
-        DWORD batchExitCode;
         /* Build include path: take the first subdirectory after the prefix.
            prefix = "/d/Martin/Mapy", resticPath = "/d/Martin/Mapy/Gpx/file.gpx"
            → includePath = "/d/Martin/Mapy/Gpx" */
@@ -1646,13 +1645,16 @@ int __stdcall FsGetFile(char* RemoteName, char* LocalName, int CopyFlags,
                                  g_BatchRestore.password,
                                  g_BatchRestore.shortId, g_BatchRestore.snapshotPath,
                                  includePath, g_BatchRestore.tempDir,
-                                 &batchExitCode);
+                                 NULL);  /* exitCode unused - partial success OK */
 
-            if (restoreOk && batchExitCode == 0) {
+            if (restoreOk) {
+                /* Activate batch even with non-zero exit code (partial success).
+                   Symlinks/device nodes may fail on Windows but regular files
+                   are restored. Missing files will fall through to per-file dump. */
                 g_BatchRestore.active = TRUE;
             }
+            /* If process didn't run at all, fall through to per-file dump */
         }
-        /* On failure, active stays FALSE → per-file dump fallback */
     }
 
     /* Check if batch restore has this file pre-extracted.
