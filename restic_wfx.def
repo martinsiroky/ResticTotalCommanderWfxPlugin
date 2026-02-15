@@ -9,3 +9,6 @@ EXPORTS
     FsExecuteFile
     FsDisconnect
     FsStatusInfo
+    FsContentGetSupportedField
+    FsContentGetValue
+    FsContentGetDefaultSortOrder

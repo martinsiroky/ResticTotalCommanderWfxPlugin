@@ -432,7 +432,6 @@ static DirEntry* GetSnapshotsForPath(RepoConfig* repo, const char* sanitizedPath
     /* Arrays to track matching snapshots */
     int* matchingIndices = NULL;
     int matchingCount = 0;
-    int cachedCount = 0;
 
     numSnaps = FetchSnapshots(repo, &snapshots);
     if (numSnaps == 0) {
@@ -448,7 +447,7 @@ static DirEntry* GetSnapshotsForPath(RepoConfig* repo, const char* sanitizedPath
         return NULL;
     }
 
-    /* First pass - identify matching snapshots and count cached */
+    /* First pass - identify matching snapshots */
     for (i = 0; i < numSnaps; i++) {
         BOOL matches = FALSE;
         for (j = 0; j < snapshots[i].pathCount; j++) {
@@ -461,28 +460,20 @@ static DirEntry* GetSnapshotsForPath(RepoConfig* repo, const char* sanitizedPath
         }
         if (matches) {
             matchingIndices[matchingCount++] = i;
-            if (LsCache_IsSnapshotLoaded(repo->name, snapshots[i].shortId)) {
-                cachedCount++;
-            }
         }
     }
 
-    /* Insert [All Files] virtual entry with cache status */
+    /* Insert [All Files] virtual entry */
     {
         FILETIME ftNow;
-        char allFilesEntry[MAX_PATH];
 
         GetSystemTimeAsFileTime(&ftNow);
 
-        snprintf(allFilesEntry, sizeof(allFilesEntry),
-                     "%s      [cached %d of %d snapshots]",
-                     ALL_FILES_ENTRY, cachedCount, matchingCount);
-
-        AddEntry(&entries, &count, &capacity, allFilesEntry, TRUE, 0, 0, ftNow);
+        AddEntry(&entries, &count, &capacity, ALL_FILES_ENTRY, TRUE, 0, 0, ftNow);
         AddEntry(&entries, &count, &capacity, "[Refresh snapshot list]", TRUE, 0, 0, ftNow);
     }
 
-    /* Second pass - add snapshot entries with [cached] suffix where applicable */
+    /* Second pass - add snapshot entries */
     for (i = 0; i < matchingCount; i++) {
         int idx = matchingIndices[i];
         char displayName[MAX_PATH];
@@ -491,11 +482,6 @@ static DirEntry* GetSnapshotsForPath(RepoConfig* repo, const char* sanitizedPath
         sscanf(snapshots[idx].time, "%d-%d-%dT%d:%d:%d", &yr, &mo, &dy, &hr, &mn, &sc);
         snprintf(displayName, sizeof(displayName), "%04d-%02d-%02d %02d-%02d-%02d (%s)",
                  yr, mo, dy, hr, mn, sc, snapshots[idx].shortId);
-
-        /* Append [cached] if snapshot is loaded */
-        if (LsCache_IsSnapshotLoaded(repo->name, snapshots[idx].shortId)) {
-            strncat(displayName, "      [cached]", sizeof(displayName) - strlen(displayName) - 1);
-        }
 
         FILETIME ft = ParseISOTime(snapshots[idx].time);
         AddEntry(&entries, &count, &capacity, displayName, TRUE, 0, 0, ft);
@@ -557,8 +543,7 @@ static void BackslashToForwardSlash(char* path) {
     }
 }
 
-/* Check if a segment is the [All Files] virtual entry.
-   Uses prefix match to handle cache status suffix like "[All Files] [cached 5 of 9 snapshots]". */
+/* Check if a segment is the [All Files] virtual entry. */
 static BOOL IsAllFilesPath(const char* seg) {
     return (strncmp(seg, ALL_FILES_ENTRY, strlen(ALL_FILES_ENTRY)) == 0);
 }
@@ -2013,4 +1998,77 @@ void __stdcall FsStatusInfo(char* RemoteName, int InfoStartEnd, int InfoOperatio
             }
         }
     }
+}
+
+/* --- Content plugin functions: custom columns for cache status --- */
+
+int __stdcall FsContentGetSupportedField(int FieldIndex, char* FieldName,
+                                          char* Units, int maxlen) {
+    if (FieldIndex == 0) {
+        strncpy(FieldName, "Cache Status", maxlen - 1);
+        FieldName[maxlen - 1] = '\0';
+        Units[0] = '\0';
+        return ft_string;
+    }
+    return ft_nomorefields;
+}
+
+int __stdcall FsContentGetValue(char* FileName, int FieldIndex, int UnitIndex,
+                                 void* FieldValue, int maxlen, int flags) {
+    char seg1[MAX_PATH], seg2[MAX_PATH], seg3[MAX_PATH], rest[MAX_PATH];
+    int numSegs;
+
+    if (FieldIndex != 0) return ft_nosuchfield;
+
+    numSegs = ParsePathSegments(FileName, seg1, seg2, seg3, rest);
+
+    /* Only show cache status for depth-3 entries (snapshot listing level) */
+    if (numSegs != 3 || rest[0] != '\0') return ft_fieldempty;
+
+    if (IsAllFilesPath(seg3)) {
+        /* [All Files] — count cached vs total matching snapshots */
+        RepoConfig* repo = RepoStore_FindByName(seg1);
+        ResticSnapshot* snapshots = NULL;
+        int numSnaps, i, j, matchingCount = 0, cachedCount = 0;
+
+        if (!repo || !repo->hasPassword) return ft_fieldempty;
+
+        numSnaps = FetchSnapshots(repo, &snapshots);
+        if (numSnaps == 0) return ft_fieldempty;
+
+        for (i = 0; i < numSnaps; i++) {
+            for (j = 0; j < snapshots[i].pathCount; j++) {
+                char sanitized[MAX_PATH];
+                SanitizePath(snapshots[i].paths[j], sanitized, MAX_PATH);
+                if (strcmp(sanitized, seg2) == 0) {
+                    matchingCount++;
+                    if (LsCache_IsSnapshotLoaded(repo->name, snapshots[i].shortId))
+                        cachedCount++;
+                    break;
+                }
+            }
+        }
+        free(snapshots);
+
+        snprintf((char*)FieldValue, maxlen, "cached %d of %d snapshots", cachedCount, matchingCount);
+        return ft_string;
+    }
+
+    /* Regular snapshot entry — check if cached */
+    {
+        char shortId[16];
+        if (ExtractShortId(seg3, shortId, sizeof(shortId))) {
+            if (LsCache_IsSnapshotLoaded(seg1, shortId)) {
+                strncpy((char*)FieldValue, "cached", maxlen - 1);
+                ((char*)FieldValue)[maxlen - 1] = '\0';
+                return ft_string;
+            }
+        }
+    }
+
+    return ft_fieldempty;
+}
+
+int __stdcall FsContentGetDefaultSortOrder(int FieldIndex) {
+    return 1; /* ascending */
 }

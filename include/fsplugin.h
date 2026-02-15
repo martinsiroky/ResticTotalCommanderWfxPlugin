@@ -100,6 +100,26 @@
 #define BG_UPLOAD 2
 #define BG_ASK_USER 4
 
+// Content plugin field types (for FsContentGetSupportedField)
+#define ft_nomorefields      0
+#define ft_numeric_32        1
+#define ft_numeric_64        2
+#define ft_numeric_floating  3
+#define ft_date              4
+#define ft_time              5
+#define ft_boolean           6
+#define ft_multiplechoice    7
+#define ft_string            8
+#define ft_fulltext          9
+#define ft_datetime         10
+
+// Content plugin return codes (for FsContentGetValue)
+#define ft_nosuchfield      -1
+#define ft_fileerror        -2
+#define ft_fieldempty       -3
+
+#define CONTENT_DELAYIFSLOW  1
+
 typedef struct {
     DWORD SizeLow, SizeHigh;
     FILETIME LastWriteTime;
