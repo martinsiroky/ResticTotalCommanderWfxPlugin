@@ -89,7 +89,8 @@ cmake --build build32
 \RepoName\PathName                   → list snapshots + [All Files] + [Refresh snapshot list]
 \RepoName\PathName\SnapshotDisplay   → directory listing from restic ls
 \RepoName\PathName\[All Files]       → merged view across all snapshots
-\RepoName\PathName\[All Files]\[v] file.txt → version listing via restic find
+\RepoName\PathName\[All Files]\file [show all versions].txt → version listing via restic find
+\RepoName\PathName\[All Files]\file - 2025-01-28 10-30-05 (fb4ed15b).txt → specific version
 ```
 
 ### Caching layers
@@ -103,6 +104,17 @@ cmake --build build32
    - Purged when FetchSnapshots() refreshes (removes deleted snapshot entries)
    - `InvalidateFile()` for targeted invalidation after file removal
    - WAL journal mode for crash safety
+
+### [All Files] version entries
+
+In the merged `[All Files]` view, files get a `" [show all versions]"` suffix inserted before
+the extension (e.g., `photo [show all versions].jpg`). These entries are marked as regular files
+(`isDirectory=FALSE`) so directories sort first. `FsExecuteFile` returns `FS_EXEC_SYMLINK` when
+the user presses Enter, which tells TC to navigate into the path. The version listing shows
+individual versions as `photo - 2025-01-28 10-30-05 (fb4ed15b).jpg`.
+
+Key helpers: `HasVersionSuffix()`, `StripVersionSuffix()`, `FindVersionComponent()`,
+`SplitAtVersionComponent()` — defined via `VERSION_SUFFIX " [show all versions]"`.
 
 ### Batch restore optimization
 
@@ -125,3 +137,4 @@ cmake --build build32
 - All persistent data lives under `%APPDATA%\GHISLER\plugins\wfx\restic_wfx\`
   - INI config: `restic_wfx.ini`
   - SQLite cache: `cache\<repo>.db`
+  - Command log: `restic_commands.log` (appended with timestamps by `LogResticCommand()`)

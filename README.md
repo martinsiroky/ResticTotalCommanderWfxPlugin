@@ -6,7 +6,7 @@ New versions and details on https://github.com/martinsiroky/ResticTotalCommander
 
 ## Requirements
 
-- Total Commander 9.x or later (64-bit)
+- Total Commander 9.x or later (32-bit or 64-bit)
 - restic.exe must be in your system PATH
   Download from: https://github.com/restic/restic/releases
 
@@ -15,8 +15,10 @@ New versions and details on https://github.com/martinsiroky/ResticTotalCommander
 ### Repository list and configuration
 ![Manage restic repositories.png](doc/Manage%20restic%20repositories.png)
 
-### List of snapshots for a backup path
+### List of snapshots for a backup path (with custom columns configured)
 ![List of snapshots for path.png](doc/List%20of%20snapshots%20for%20path.png)
+
+![Custom columns configuration.png](doc/Custom%20columns%20configuration.png)
 
 ### Simple snapshot view (files/directories as of that snapshot)
 ![Snapshot detail.png](doc/Snapshot%20detail.png)
@@ -29,12 +31,14 @@ New versions and details on https://github.com/martinsiroky/ResticTotalCommander
 
 ## Installation
 
-1. Copy `restic_wfx.wfx64` and `README.txt` to your Total Commander plugins directory
+1. Copy the plugin files and `README.txt` to your Total Commander plugins directory
    (e.g., `C:\Program Files\Total Commander\plugins\wfx\restic_wfx\`)
+   - 64-bit Total Commander: use `restic_wfx.wfx64`
+   - 32-bit Total Commander: use `restic_wfx.wfx`
 
 2. In Total Commander, go to **Configuration > Options > Plugins > File System Plugins**
 
-3. Click "Add" and select `restic_wfx.wfx64`
+3. Click "Add" and select the plugin file matching your TC version
 
 4. The plugin will appear as "Restic Backups" in the Network Neighborhood
 
@@ -70,7 +74,24 @@ Repository structure:
 
 **[All Files] view:**
 Shows a merged view of files across all snapshots for the selected path.
-When browsing a file, you'll see its versions from different snapshots.
+Directories are listed first. Files appear with a `[show all versions]`
+label before their extension (e.g., `photo [show all versions].jpg`).
+Press Enter on such a file to see all its versions across snapshots.
+Each version is shown as `photo - 2025-01-28 10-30-05 (fb4ed15b).jpg`.
+
+## Custom Columns
+
+The plugin provides a **Cache Status** custom column that shows whether a
+snapshot's directory listing has been cached locally:
+- Individual snapshots show `cached` if their listing is stored locally
+- `[All Files]` shows `cached 3 of 5 snapshots` (how many are cached)
+
+To add it in Total Commander:
+1. Right-click the column header and select "Custom Columns"
+2. Click "Add Column" and select `[=fs.Cache Status]`
+
+Cached snapshots load instantly; uncached ones are fetched from restic
+on first access.
 
 ## Copying Files (F5)
 
@@ -110,6 +131,7 @@ Plugin data is stored in:
 
 - `restic_wfx.ini` - Repository configuration (paths, names)
 - `cache\*.db` - SQLite cache for directory listings
+- `restic_commands.log` - Log of restic commands (for troubleshooting)
 
 Passwords are never stored on disk. They are kept in memory only for the
 duration of the Total Commander session.
