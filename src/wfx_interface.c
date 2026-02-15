@@ -55,8 +55,8 @@ static DWORD GetSecureRandomValue(void) {
 
 /* [All Files] virtual snapshot constants */
 #define ALL_FILES_ENTRY    "[All Files]"
-#define VERSION_PREFIX     "[versions] "
-#define VERSION_PREFIX_LEN 11
+#define VERSION_SUFFIX     " [show all versions]"
+#define VERSION_SUFFIX_LEN 20
 
 /* Get the path to README.txt next to the plugin DLL.
    Returns TRUE if the file exists, FALSE otherwise. */
@@ -548,46 +548,59 @@ static BOOL IsAllFilesPath(const char* seg) {
     return (strncmp(seg, ALL_FILES_ENTRY, strlen(ALL_FILES_ENTRY)) == 0);
 }
 
-/* Check if a name starts with the version prefix "[v] ". */
-static BOOL HasVersionPrefix(const char* name) {
-    return (strncmp(name, VERSION_PREFIX, VERSION_PREFIX_LEN) == 0);
+/* Check if a name contains the version suffix " [show all versions]". */
+static BOOL HasVersionSuffix(const char* name) {
+    return (strstr(name, VERSION_SUFFIX) != NULL);
 }
 
-/* Return the name without the "[v] " prefix, or the original name if no prefix. */
-static const char* StripVersionPrefix(const char* name) {
-    if (HasVersionPrefix(name)) return name + VERSION_PREFIX_LEN;
+/* Return the name without the " [show all versions]" suffix (static buffer),
+   rejoining stem and extension. E.g. "photo [show all versions].jpg" → "photo.jpg". */
+static const char* StripVersionSuffix(const char* name) {
+    static char buf[MAX_PATH];
+    const char* suffixPos = strstr(name, VERSION_SUFFIX);
+    if (suffixPos) {
+        int stemLen = (int)(suffixPos - name);
+        const char* afterSuffix = suffixPos + VERSION_SUFFIX_LEN;
+        snprintf(buf, MAX_PATH, "%.*s%s", stemLen, name, afterSuffix);
+        return buf;
+    }
     return name;
 }
 
-/* Find a path component starting with "[v] " in a rest string (backslash-separated).
-   Returns pointer to the "[v] " within rest, or NULL if not found. */
+/* Find a path component containing " [show all versions]" in a rest string
+   (backslash-separated). Returns pointer to the start of that component, or NULL.
+   The suffix appears before the extension: "photo [show all versions].jpg" */
 static const char* FindVersionComponent(const char* rest) {
-    const char* p = rest;
-    if (!p || !*p) return NULL;
+    const char* p;
+    if (!rest || !*rest) return NULL;
 
-    /* Check if rest itself starts with [v] */
-    if (HasVersionPrefix(p)) return p;
+    p = strstr(rest, VERSION_SUFFIX);
+    if (!p) return NULL;
 
-    /* Scan for \[v] */
-    while ((p = strstr(p, "\\" VERSION_PREFIX)) != NULL) {
-        return p + 1; /* skip the backslash, return pointer to "[v] " */
+    /* Backtrack to find start of this component */
+    while (p > rest && *(p - 1) != '\\') {
+        p--;
     }
-    return NULL;
+    return p;
 }
 
-/* Split rest at the [v] component.
-   rest = "subdir\[v] photo.jpg\2025-01-28 10-30-05 (fb4ed15b)"
+/* Split rest at the version-suffixed component. Suffix appears before extension.
+   rest = "subdir\photo [show all versions].jpg\2025-01-28 10-30-05 (fb4ed15b)"
    → pathBefore="subdir", vFileName="photo.jpg", afterVersion="2025-01-28 10-30-05 (fb4ed15b)"
 
-   rest = "[v] photo.jpg\2025-01-28..."
+   rest = "photo [show all versions].jpg\2025-01-28..."
    → pathBefore="", vFileName="photo.jpg", afterVersion="2025-01-28..."
 
-   rest = "[v] photo.jpg"
-   → pathBefore="", vFileName="photo.jpg", afterVersion="" */
+   rest = "photo [show all versions].jpg"
+   → pathBefore="", vFileName="photo.jpg", afterVersion=""
+
+   rest = "Makefile [show all versions]\2025-01-28..."
+   → pathBefore="", vFileName="Makefile", afterVersion="2025-01-28..." */
 static void SplitAtVersionComponent(const char* rest, char* pathBefore, char* vFileName, char* afterVersion) {
     const char* vComp;
-    const char* afterPrefix;
-    const char* nextSep;
+    const char* suffixPos;
+    const char* afterSuffix;
+    const char* compEnd;
 
     pathBefore[0] = '\0';
     vFileName[0] = '\0';
@@ -596,9 +609,8 @@ static void SplitAtVersionComponent(const char* rest, char* pathBefore, char* vF
     vComp = FindVersionComponent(rest);
     if (!vComp) return;
 
-    /* pathBefore = everything before the [v] component */
+    /* pathBefore = everything before the version component */
     if (vComp > rest) {
-        /* There's a backslash before [v], so pathBefore = rest up to that backslash */
         int len = (int)(vComp - rest - 1); /* -1 to skip the separating backslash */
         if (len < 0) len = 0;
         if (len >= MAX_PATH) len = MAX_PATH - 1;
@@ -606,23 +618,30 @@ static void SplitAtVersionComponent(const char* rest, char* pathBefore, char* vF
         pathBefore[len] = '\0';
     }
 
-    /* Skip "[v] " prefix to get filename */
-    afterPrefix = vComp + VERSION_PREFIX_LEN;
+    /* Find the suffix within this component */
+    suffixPos = strstr(vComp, VERSION_SUFFIX);
+    if (!suffixPos) return;
 
-    /* Find end of filename (next backslash or end of string) */
-    nextSep = strchr(afterPrefix, '\\');
-    if (nextSep) {
-        int len = (int)(nextSep - afterPrefix);
-        if (len >= MAX_PATH) len = MAX_PATH - 1;
-        memcpy(vFileName, afterPrefix, len);
-        vFileName[len] = '\0';
+    /* afterSuffix points to the extension (e.g. ".jpg\..." or "\..." or "") */
+    afterSuffix = suffixPos + VERSION_SUFFIX_LEN;
 
-        /* afterVersion = everything after the backslash */
-        strncpy(afterVersion, nextSep + 1, MAX_PATH - 1);
-        afterVersion[MAX_PATH - 1] = '\0';
-    } else {
-        strncpy(vFileName, afterPrefix, MAX_PATH - 1);
-        vFileName[MAX_PATH - 1] = '\0';
+    /* Find end of this component (next backslash or end of string) */
+    compEnd = strchr(afterSuffix, '\\');
+
+    /* vFileName = stem + extension (removing the suffix from the middle)
+       stem = text from component start to suffix, extension = suffix end to component end */
+    {
+        int stemLen = (int)(suffixPos - vComp);
+        if (compEnd) {
+            int extLen = (int)(compEnd - afterSuffix);
+            snprintf(vFileName, MAX_PATH, "%.*s%.*s", stemLen, vComp, extLen, afterSuffix);
+
+            /* afterVersion = everything after the component separator */
+            strncpy(afterVersion, compEnd + 1, MAX_PATH - 1);
+            afterVersion[MAX_PATH - 1] = '\0';
+        } else {
+            snprintf(vFileName, MAX_PATH, "%.*s%s", stemLen, vComp, afterSuffix);
+        }
     }
 }
 
@@ -975,8 +994,9 @@ static DirEntry* GetSnapshotContents(RepoConfig* repo, const char* sanitizedPath
 }
 
 /* Merge directory contents from all snapshots matching a sanitized path.
-   Directories are listed as-is; files get a "[v] " prefix and isDirectory=TRUE
-   so the user can Enter them to see version listings. */
+   Directories are listed as-is; files get " [show all versions]" inserted before
+   the extension and are marked as regular files. FsExecuteFile handles Enter
+   via FS_EXEC_SYMLINK. */
 static DirEntry* GetAllFilesContents(RepoConfig* repo, const char* sanitizedPath,
                                       const char* subpath, int* outCount) {
     DirEntry* entries = NULL;
@@ -1026,7 +1046,7 @@ static DirEntry* GetAllFilesContents(RepoConfig* repo, const char* sanitizedPath
 
             /* Check if already in merged result */
             for (m = 0; m < count; m++) {
-                const char* existingBase = StripVersionPrefix(entries[m].name);
+                const char* existingBase = StripVersionSuffix(entries[m].name);
                 if (strcmp(existingBase, baseName) == 0) {
                     duplicate = TRUE;
                     break;
@@ -1039,11 +1059,18 @@ static DirEntry* GetAllFilesContents(RepoConfig* repo, const char* sanitizedPath
                     AddEntry(&entries, &count, &capacity,
                              baseName, TRUE, 0, 0, snapEntries[k].lastWriteTime);
                 } else {
-                    /* Files: add with [v] prefix, mark as directory so TC allows Enter */
+                    /* Files: add with [show all versions] suffix before extension,
+                       mark as file (not directory). FsExecuteFile returns
+                       FS_EXEC_SYMLINK to allow Enter navigation. */
                     char prefixedName[MAX_PATH];
-                    snprintf(prefixedName, MAX_PATH, "%s%s", VERSION_PREFIX, baseName);
+                    const char* dot = strrchr(baseName, '.');
+                    if (dot)
+                        snprintf(prefixedName, MAX_PATH, "%.*s%s%s",
+                                 (int)(dot - baseName), baseName, VERSION_SUFFIX, dot);
+                    else
+                        snprintf(prefixedName, MAX_PATH, "%s%s", baseName, VERSION_SUFFIX);
                     AddEntry(&entries, &count, &capacity,
-                             prefixedName, TRUE,
+                             prefixedName, FALSE,
                              snapEntries[k].fileSizeLow, snapEntries[k].fileSizeHigh,
                              snapEntries[k].lastWriteTime);
                 }
@@ -1140,8 +1167,19 @@ static DirEntry* GetFileVersions(RepoConfig* repo, const char* sanitizedPath,
         if (!origName) origName = strrchr(findEntries[i].path, '\\');
         origName = origName ? origName + 1 : findEntries[i].path;
 
-        snprintf(displayName, sizeof(displayName), "%04d-%02d-%02d %02d-%02d-%02d (%s) %s",
-                 yr, mo, dy, hr, mn, sc, findEntries[i].shortId, origName);
+        /* Format: "fileName - timestamp (snapshotId).ext" */
+        {
+            const char* dot = strrchr(origName, '.');
+            if (dot)
+                snprintf(displayName, sizeof(displayName),
+                         "%.*s - %04d-%02d-%02d %02d-%02d-%02d (%s)%s",
+                         (int)(dot - origName), origName,
+                         yr, mo, dy, hr, mn, sc, findEntries[i].shortId, dot);
+            else
+                snprintf(displayName, sizeof(displayName),
+                         "%s - %04d-%02d-%02d %02d-%02d-%02d (%s)",
+                         origName, yr, mo, dy, hr, mn, sc, findEntries[i].shortId);
+        }
 
         ft = ParseISOTime(findEntries[i].mtime);
         AddEntry(&entries, &count, &capacity,
@@ -1232,7 +1270,7 @@ DirEntry* GetEntriesForPath(const char* path, int* outCount) {
                     char pathBefore[MAX_PATH], vFileName[MAX_PATH], afterV[MAX_PATH];
                     SplitAtVersionComponent(rest, pathBefore, vFileName, afterV);
                     if (afterV[0] == '\0') {
-                        /* Entered [v] file → show version listing */
+                        /* Entered versioned file → show version listing */
                         char filePath[MAX_PATH];
                         if (pathBefore[0])
                             snprintf(filePath, MAX_PATH, "%s\\%s", pathBefore, vFileName);
@@ -1416,7 +1454,7 @@ static BOOL ResolveFileForRewrite(const char* remoteName,
     if (!FindOriginalPath(*outRepo, seg2, outOriginalPath)) return FALSE;
 
     if (IsAllFilesPath(seg3)) {
-        /* [All Files] path: rest might be "subdir\file.txt" or "[v] file.txt\..." */
+        /* [All Files] path: rest might be "subdir\file.txt" or "file [show all versions].txt\..." */
         const char* vComp = FindVersionComponent(rest);
         char fileSubpath[MAX_PATH];
 
@@ -1476,7 +1514,7 @@ static BOOL ResolveRemotePath(const char* remoteName, ResolvedPath* out) {
         return FALSE;
 
     if (IsAllFilesPath(seg3)) {
-        /* [All Files] path: rest = "subdir\[v] photo.jpg\2025-01-28 10-30-05 (fb4ed15b)" */
+        /* [All Files] path: rest = "subdir\photo [show all versions].jpg\2025-01-28 10-30-05 (fb4ed15b)" */
         char pathBefore[MAX_PATH], vFileName[MAX_PATH], afterV[MAX_PATH];
         const char* vComp = FindVersionComponent(rest);
         if (!vComp) return FALSE;
@@ -1798,7 +1836,7 @@ int __stdcall FsExecuteFile(HWND MainWin, char* RemoteName, char* Verb) {
     if (strcmp(Verb, "open") != 0)
         return FS_EXEC_YOURSELF;
 
-    /* Handle [Refresh snapshot list] click */
+    /* Handle [Refresh snapshot list] click and [versions] file entries */
     {
         char seg1[MAX_REPO_NAME], seg2[MAX_PATH], seg3[MAX_PATH], rest[MAX_PATH];
         int numSegs = ParsePathSegments(RemoteName, seg1, seg2, seg3, rest);
@@ -1816,6 +1854,21 @@ int __stdcall FsExecuteFile(HWND MainWin, char* RemoteName, char* Verb) {
                               buf, MAX_PATH);
             }
             return FS_EXEC_OK;
+        }
+
+        /* Handle [versions] file entries in [All Files] view —
+           return FS_EXEC_SYMLINK so TC navigates into them */
+        if (numSegs >= 3 && IsAllFilesPath(seg3)) {
+            const char* vComp = FindVersionComponent(rest);
+            if (vComp) {
+                char pathBefore[MAX_PATH], vFileName[MAX_PATH], afterV[MAX_PATH];
+                SplitAtVersionComponent(rest, pathBefore, vFileName, afterV);
+                if (afterV[0] == '\0') {
+                    /* User clicked a [versions] entry with no version selected yet —
+                       navigate into it to show the version list */
+                    return FS_EXEC_SYMLINK;
+                }
+            }
         }
     }
 
